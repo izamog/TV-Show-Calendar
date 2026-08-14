@@ -77,6 +77,21 @@ Subscription"), or Outlook. Each event's summary is `S01EXX Show Name`, and
 `DTSTART`/`DTEND` carry the exact air instant (emitted in UTC) so reminders fire
 at the true air moment in the subscriber's local zone.
 
+## Testing
+
+Unit tests (Vitest) cover the non-trivial logic — the rolling-window anchoring
+and BST/GMT conversions in `lib/dates.ts`, and the RFC 5545 feed builder in
+`lib/ical.ts` (summary format, escaping, line folding, empty input).
+
+```bash
+npm test          # run once
+npm run test:watch
+```
+
+Notably the window tests assert Monday-anchoring and 14-day spans across both DST
+transition days and a late-Sunday-UTC instant that is already Monday in London,
+locking in the "always a rolling 2-week Mon–Sun window" guarantee.
+
 ## Deploy to Vercel (1-click)
 
 1. Push this repo to GitHub/GitLab/Bitbucket.
