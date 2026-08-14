@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Read(//private/tmp/**)",
+      "Bash(python3 -)",
+      "Bash(xargs kill -9)",
+      "Bash(pkill -f \"next\")",
+      "Bash(npm run *)",
+      "Bash(curl -s -o /tmp/dev_home.html -w \"page status=%{http_code}\\\\n\" http://localhost:3000/)",
+      "Bash(curl -s http://localhost:3000/api/calendar)",
+      "Bash(git rm *)",
+      "Bash(git add *)",
+      "Bash(git branch *)",
+      "Bash(git commit -q -m ' *)",
+      "Bash(git check-ignore *)"
+    ]
+  }
+}
