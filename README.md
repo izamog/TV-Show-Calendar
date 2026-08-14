@@ -1,5 +1,7 @@
 # TV — Next 14 Days
 
+[![CI](https://github.com/izamog/TV-Show-Calendar/actions/workflows/ci.yml/badge.svg)](https://github.com/izamog/TV-Show-Calendar/actions/workflows/ci.yml)
+
 A production-ready **Next.js (App Router) + TypeScript** app that shows a rolling
 **14-day calendar** of upcoming **scripted** Season 1 TV episodes on a curated set
 of networks/streamers, plus a live subscribable **iCal feed**.
