@@ -1,11 +1,11 @@
 import { buildCalendar } from "@/lib/ical";
-import { getWindowEpisodes } from "@/lib/tmdb";
+import { getFeedEpisodes } from "@/lib/tmdb";
 
 /**
- * Live iCal feed for the current rolling 14-day window.
+ * Live iCal feed, covering a longer forward span than the page displays.
  *
  * Subscribable from Google/Apple/Outlook calendars. Recomputed per request
- * (with TMDB responses cached upstream for an hour) so the window always
+ * (with TMDB responses cached upstream for an hour) so the feed always
  * reflects the current week without a redeploy.
  */
 
@@ -14,13 +14,13 @@ export const revalidate = 0;
 
 export async function GET(): Promise<Response> {
   try {
-    const episodes = await getWindowEpisodes();
+    const episodes = await getFeedEpisodes();
     const body = buildCalendar(episodes);
     return new Response(body, {
       status: 200,
       headers: {
         "Content-Type": "text/calendar; charset=utf-8",
-        "Content-Disposition": 'inline; filename="tv-next-14-days.ics"',
+        "Content-Disposition": 'inline; filename="tv-show-calendar.ics"',
         "Cache-Control": "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
       },
     });

@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   getRollingWindow,
+  parseWeekOffset,
+  formatFullDate,
+  MAX_WEEK_OFFSET,
   resolveAirInstantUtcMs,
   londonDateKey,
   formatLondonTime,
@@ -14,47 +17,132 @@ function weekdayOf(dayKey: string): number {
   return new Date(Date.UTC(y, m - 1, d, 12)).getUTCDay();
 }
 
-describe("getRollingWindow — the non-negotiable 14-day window", () => {
+describe("getRollingWindow — 28-day period, 14 visible, week-stepped", () => {
   // Sample instants across the year, including both DST-transition days and a
   // late-Sunday-UTC instant that is already Monday in London.
-  const cases: Array<[label: string, iso: string, expectedStart: string]> = [
+  const cases: Array<[label: string, iso: string, expectedMonday: string]> = [
     ["summer / BST (a Friday)", "2026-08-14T10:00:00Z", "2026-08-10"],
     ["winter / GMT (a Thursday)", "2026-01-15T10:00:00Z", "2026-01-12"],
     ["spring-forward day (BST begins)", "2026-03-29T12:00:00Z", "2026-03-23"],
     ["fall-back day (GMT begins)", "2026-10-25T12:00:00Z", "2026-10-19"],
   ];
 
-  it.each(cases)("anchors to Monday and spans 14 days: %s", (_label, iso, expectedStart) => {
-    const w = getRollingWindow(new Date(iso));
-    expect(w.dayKeys).toHaveLength(14);
-    expect(w.startKey).toBe(expectedStart);
-    expect(w.startKey).toBe(w.dayKeys[0]);
-    expect(w.endKey).toBe(w.dayKeys[13]);
-    expect(weekdayOf(w.startKey)).toBe(1); // Monday
-    expect(weekdayOf(w.endKey)).toBe(0); // Sunday
+  it.each(cases)("starts on the Monday of the current week: %s", (_l, iso, monday) => {
+    const w = getRollingWindow(0, new Date(iso));
+    expect(w.periodStartKey).toBe(monday);
+    expect(weekdayOf(w.periodStartKey)).toBe(1); // Monday
+    expect(w.periodDayKeys).toHaveLength(28);
+    expect(weekdayOf(w.periodEndKey)).toBe(0); // Sunday
   });
 
-  it("produces 14 consecutive calendar days with no gaps or duplicates", () => {
-    const w = getRollingWindow(new Date("2026-03-29T12:00:00Z")); // across DST
-    expect(new Set(w.dayKeys).size).toBe(14);
-    for (let i = 1; i < w.dayKeys.length; i++) {
-      const prev = new Date(w.dayKeys[i - 1] + "T00:00:00Z").getTime();
-      const cur = new Date(w.dayKeys[i] + "T00:00:00Z").getTime();
+  it("shows exactly 14 days, starting Monday and ending Sunday", () => {
+    for (let offset = 0; offset <= MAX_WEEK_OFFSET; offset++) {
+      const w = getRollingWindow(offset, new Date("2026-08-14T10:00:00Z"));
+      expect(w.visibleDayKeys).toHaveLength(14);
+      expect(weekdayOf(w.visibleDayKeys[0])).toBe(1);
+      expect(weekdayOf(w.visibleDayKeys[13])).toBe(0);
+    }
+  });
+
+  it("steps the visible slice by exactly one week per offset", () => {
+    const now = new Date("2026-08-14T10:00:00Z"); // week of Mon 2026-08-10
+    expect(getRollingWindow(0, now).visibleDayKeys[0]).toBe("2026-08-10");
+    expect(getRollingWindow(1, now).visibleDayKeys[0]).toBe("2026-08-17");
+    expect(getRollingWindow(2, now).visibleDayKeys[0]).toBe("2026-08-24");
+  });
+
+  it("keeps the visible slice inside the 28-day period at every offset", () => {
+    const now = new Date("2026-08-14T10:00:00Z");
+    for (let offset = 0; offset <= MAX_WEEK_OFFSET; offset++) {
+      const w = getRollingWindow(offset, now);
+      const period = new Set(w.periodDayKeys);
+      for (const key of w.visibleDayKeys) expect(period.has(key)).toBe(true);
+    }
+    // The last offset must land exactly on the end of the period.
+    const last = getRollingWindow(MAX_WEEK_OFFSET, now);
+    expect(last.visibleDayKeys[13]).toBe(last.periodEndKey);
+  });
+
+  it("produces 28 consecutive days with no gaps or duplicates across a DST change", () => {
+    const w = getRollingWindow(0, new Date("2026-03-29T12:00:00Z"));
+    expect(new Set(w.periodDayKeys).size).toBe(28);
+    for (let i = 1; i < w.periodDayKeys.length; i++) {
+      const prev = new Date(w.periodDayKeys[i - 1] + "T00:00:00Z").getTime();
+      const cur = new Date(w.periodDayKeys[i] + "T00:00:00Z").getTime();
       expect(cur - prev).toBe(24 * 60 * 60 * 1000);
     }
   });
 
-  it("uses the LONDON civil date, not UTC: a late-Sunday-UTC instant that is Monday in London rolls to the next week", () => {
-    // 2026-08-16 23:59Z is Mon 2026-08-17 00:59 BST → window starts that Monday.
-    const w = getRollingWindow(new Date("2026-08-16T23:59:00Z"));
-    expect(w.startKey).toBe("2026-08-17");
-    expect(weekdayOf(w.startKey)).toBe(1);
+  it("uses the LONDON civil date: a late-Sunday-UTC instant already Monday in London rolls forward", () => {
+    // 2026-08-16 23:59Z is Mon 2026-08-17 00:59 BST → period starts that Monday.
+    const w = getRollingWindow(0, new Date("2026-08-16T23:59:00Z"));
+    expect(w.periodStartKey).toBe("2026-08-17");
   });
 
-  it("is deterministic for a given instant", () => {
-    const a = getRollingWindow(new Date("2026-05-01T08:00:00Z"));
-    const b = getRollingWindow(new Date("2026-05-01T08:00:00Z"));
+  it("reports arrow availability at the ends of the period", () => {
+    const now = new Date("2026-08-14T10:00:00Z");
+    const first = getRollingWindow(0, now);
+    expect(first.canGoEarlier).toBe(false);
+    expect(first.canGoLater).toBe(true);
+
+    const last = getRollingWindow(MAX_WEEK_OFFSET, now);
+    expect(last.canGoEarlier).toBe(true);
+    expect(last.canGoLater).toBe(false);
+
+    // Arrow targets are clamped, so they never point outside the period.
+    expect(first.earlierOffset).toBe(0);
+    expect(last.laterOffset).toBe(MAX_WEEK_OFFSET);
+  });
+
+  it("clamps out-of-range and malformed ?week values instead of breaking", () => {
+    const now = new Date("2026-08-14T10:00:00Z");
+    for (const bad of ["", "nonsense", "-5", "99", "1.5", "1e3", null, undefined]) {
+      const w = getRollingWindow(bad as string | null | undefined, now);
+      expect(w.weekOffset).toBeGreaterThanOrEqual(0);
+      expect(w.weekOffset).toBeLessThanOrEqual(MAX_WEEK_OFFSET);
+      expect(w.visibleDayKeys).toHaveLength(14);
+    }
+    expect(getRollingWindow("99", now).weekOffset).toBe(MAX_WEEK_OFFSET);
+    expect(getRollingWindow("-5", now).weekOffset).toBe(0);
+    expect(getRollingWindow("2", now).weekOffset).toBe(2);
+  });
+
+  it("labels the visible range, collapsing a shared month or year", () => {
+    const now = new Date("2026-08-14T10:00:00Z");
+    // Mon 10 Aug – Sun 23 Aug: same month and year.
+    expect(getRollingWindow(0, now).rangeLabel).toBe("10 – 23 Aug 2026");
+    // Mon 24 Aug – Sun 6 Sep: crosses a month boundary. en-GB abbreviates
+    // September as "Sept" (4 letters) — that is correct ICU output, not a typo.
+    expect(getRollingWindow(2, now).rangeLabel).toBe("24 Aug – 6 Sept 2026");
+    // Crossing a year boundary keeps both years.
+    expect(getRollingWindow(2, new Date("2026-12-14T10:00:00Z")).rangeLabel).toBe(
+      "28 Dec 2026 – 10 Jan 2027"
+    );
+  });
+
+  it("is deterministic for a given instant and offset", () => {
+    const a = getRollingWindow(1, new Date("2026-05-01T08:00:00Z"));
+    const b = getRollingWindow(1, new Date("2026-05-01T08:00:00Z"));
     expect(a).toEqual(b);
+  });
+});
+
+describe("parseWeekOffset", () => {
+  it("clamps to the valid range and defaults to the current week", () => {
+    expect(parseWeekOffset(undefined)).toBe(0);
+    expect(parseWeekOffset(null)).toBe(0);
+    expect(parseWeekOffset("")).toBe(0);
+    expect(parseWeekOffset("abc")).toBe(0);
+    expect(parseWeekOffset("1")).toBe(1);
+    expect(parseWeekOffset("-3")).toBe(0);
+    expect(parseWeekOffset("100")).toBe(MAX_WEEK_OFFSET);
+  });
+});
+
+describe("formatFullDate — spoken label for a day cell", () => {
+  it("renders the unabbreviated date", () => {
+    // en-GB punctuates the weekday with a comma.
+    expect(formatFullDate("2026-08-10")).toBe("Monday, 10 August 2026");
   });
 });
 

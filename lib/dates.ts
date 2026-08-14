@@ -11,16 +11,43 @@ import type { ServiceKind } from "./types";
  */
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const WINDOW_LENGTH_DAYS = 14;
 
-/** A resolved 14-day window, all keys are `YYYY-MM-DD` London calendar dates. */
+/** The rolling period the calendar covers: 4 Monday–Sunday weeks from this week. */
+export const PERIOD_DAYS = 28;
+/** How much of that period is on screen at once: 2 Monday–Sunday weeks. */
+export const VISIBLE_DAYS = 14;
+/** Scroll step for the up/down arrows. */
+const DAYS_PER_WEEK = 7;
+/** Highest week offset that still fits a full visible window inside the period. */
+export const MAX_WEEK_OFFSET = (PERIOD_DAYS - VISIBLE_DAYS) / DAYS_PER_WEEK;
+
+/**
+ * A resolved rolling window. All day keys are `YYYY-MM-DD` London calendar dates.
+ *
+ * The *period* is a fixed 28 days beginning on the Monday of the current London
+ * week. The *visible* slice is a 14-day (two-week) view into that period, moved
+ * one week at a time by the up/down arrows — so the data range never changes as
+ * the user scrolls, only which fortnight is on screen.
+ */
 export interface RollingWindow {
-  /** Monday of the current London week. */
-  startKey: string;
-  /** Sunday of the following week (start + 13 days). */
-  endKey: string;
-  /** 14 sequential London date keys, index 0 = Monday of current week. */
-  dayKeys: string[];
+  /** Monday of the current London week — day 0 of the 28-day period. */
+  periodStartKey: string;
+  /** Final day of the 28-day period (periodStart + 27). */
+  periodEndKey: string;
+  /** All 28 day keys of the period, in order. */
+  periodDayKeys: string[];
+  /** Which week of the period the visible slice starts at (0..MAX_WEEK_OFFSET). */
+  weekOffset: number;
+  /** The 14 day keys currently on screen. */
+  visibleDayKeys: string[];
+  /** Human label for the visible slice, e.g. "27 Jul – 9 Aug 2026". */
+  rangeLabel: string;
+  /** Whether the up/down arrows have anywhere to go. */
+  canGoEarlier: boolean;
+  canGoLater: boolean;
+  /** Offsets the arrows link to (clamped, so they never point out of range). */
+  earlierOffset: number;
+  laterOffset: number;
 }
 
 /** Returns the London calendar date of an instant as `[year, month, day]` (month is 1-based). */
@@ -42,32 +69,91 @@ function civilDayKey(utcMidnight: Date): string {
 }
 
 /**
- * The rolling 14-day window: two Monday–Sunday weeks whose first row starts on
- * the Monday of the current London calendar week. Pass `now` for testability;
- * defaults to the real clock.
+ * Parse the `?week=` search param into a valid week offset.
+ * Anything absent, malformed, or out of range clamps to 0 (the current week),
+ * so a hand-edited URL can never render an out-of-period grid.
  */
-export function getRollingWindow(now: Date = new Date()): RollingWindow {
+export function parseWeekOffset(raw?: string | null): number {
+  const n = Number(raw);
+  if (!raw || !Number.isInteger(n)) return 0;
+  return Math.min(Math.max(n, 0), MAX_WEEK_OFFSET);
+}
+
+/** Format the visible range, collapsing a shared month/year: "27 Jul – 9 Aug 2026". */
+function formatRangeLabel(startKey: string, endKey: string): string {
+  const at = (key: string) => {
+    const [y, m, d] = key.split("-").map(Number);
+    // Noon UTC avoids any zone rollover when labelling a civil date.
+    return new Date(Date.UTC(y, m - 1, d, 12));
+  };
+  const start = at(startKey);
+  const end = at(endKey);
+  const day = (dt: Date) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", day: "numeric" }).format(dt);
+  const month = (dt: Date) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", month: "short" }).format(dt);
+  const year = (dt: Date) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", year: "numeric" }).format(dt);
+
+  const sameMonth = startKey.slice(0, 7) === endKey.slice(0, 7);
+  const sameYear = startKey.slice(0, 4) === endKey.slice(0, 4);
+
+  if (sameMonth) return `${day(start)} – ${day(end)} ${month(end)} ${year(end)}`;
+  if (sameYear) {
+    return `${day(start)} ${month(start)} – ${day(end)} ${month(end)} ${year(end)}`;
+  }
+  return `${day(start)} ${month(start)} ${year(start)} – ${day(end)} ${month(end)} ${year(end)}`;
+}
+
+/**
+ * The rolling window: a 28-day period starting on the Monday of the current
+ * London week, with a 14-day slice visible at `weekOffset`.
+ *
+ * Pass `now` for testability; defaults to the real clock. The period is
+ * recomputed from the clock on every call and is never hardcoded.
+ */
+export function getRollingWindow(
+  weekOffsetRaw?: string | number | null,
+  now: Date = new Date()
+): RollingWindow {
   const [year, month, day] = londonYmd(now);
 
   // Anchor at UTC midnight of today's London date. UTC arithmetic on a civil
   // date is DST-agnostic — we are only counting calendar days here, not
   // instants — so stepping by whole days never drifts across a DST boundary.
-  const anchor = new Date(Date.UTC(year, month - 1, day));
+  const today = new Date(Date.UTC(year, month - 1, day));
 
-  // getUTCDay: 0=Sun..6=Sat. Days elapsed since Monday of this week.
-  const daysSinceMonday = (anchor.getUTCDay() + 6) % 7;
-  anchor.setUTCDate(anchor.getUTCDate() - daysSinceMonday);
+  // getUTCDay: 0=Sun..6=Sat. Step back to the Monday of this week.
+  const daysSinceMonday = (today.getUTCDay() + 6) % 7;
+  const periodStart = new Date(today.getTime() - daysSinceMonday * MS_PER_DAY);
 
-  const dayKeys: string[] = [];
-  for (let i = 0; i < WINDOW_LENGTH_DAYS; i++) {
-    const d = new Date(anchor.getTime() + i * MS_PER_DAY);
-    dayKeys.push(civilDayKey(d));
+  const periodDayKeys: string[] = [];
+  for (let i = 0; i < PERIOD_DAYS; i++) {
+    periodDayKeys.push(civilDayKey(new Date(periodStart.getTime() + i * MS_PER_DAY)));
   }
 
+  const weekOffset =
+    typeof weekOffsetRaw === "number"
+      ? Math.min(Math.max(Math.trunc(weekOffsetRaw), 0), MAX_WEEK_OFFSET)
+      : parseWeekOffset(weekOffsetRaw);
+
+  const from = weekOffset * DAYS_PER_WEEK;
+  const visibleDayKeys = periodDayKeys.slice(from, from + VISIBLE_DAYS);
+
   return {
-    startKey: dayKeys[0],
-    endKey: dayKeys[dayKeys.length - 1],
-    dayKeys,
+    periodStartKey: periodDayKeys[0],
+    periodEndKey: periodDayKeys[periodDayKeys.length - 1],
+    periodDayKeys,
+    weekOffset,
+    visibleDayKeys,
+    rangeLabel: formatRangeLabel(
+      visibleDayKeys[0],
+      visibleDayKeys[visibleDayKeys.length - 1]
+    ),
+    canGoEarlier: weekOffset > 0,
+    canGoLater: weekOffset < MAX_WEEK_OFFSET,
+    earlierOffset: Math.max(0, weekOffset - 1),
+    laterOffset: Math.min(MAX_WEEK_OFFSET, weekOffset + 1),
   };
 }
 
@@ -178,6 +264,22 @@ export function formatColumnHeader(dayKey: string): { weekday: string; dayOfMont
     weekday: "short",
   }).format(instant);
   return { weekday, dayOfMonth: String(day) };
+}
+
+/**
+ * Full spoken date for a day cell, e.g. "Monday 27 July 2026".
+ * The visual header shows only "Mon" + "27"; screen readers get this instead so
+ * the cell is unambiguous out of visual context (WCAG 1.3.1).
+ */
+export function formatFullDate(dayKey: string): string {
+  const [year, month, day] = dayKey.split("-").map((n) => Number(n));
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "UTC",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(new Date(Date.UTC(year, month - 1, day, 12, 0, 0)));
 }
 
 /** ICS UTC timestamp: `YYYYMMDDTHHMMSSZ`. */

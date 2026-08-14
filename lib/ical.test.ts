@@ -8,6 +8,8 @@ function makeEpisode(overrides: Partial<Episode> = {}): Episode {
     showId: 100,
     showName: "Widow's Bay",
     episodeName: "Episode 1: Pilot",
+    episodeOverview: null,
+    showOverview: null,
     seasonNumber: 1,
     episodeNumber: 1,
     code: "S01E01",
@@ -43,9 +45,20 @@ describe("buildCalendar", () => {
     expect((ics.match(/END:VEVENT/g) ?? []).length).toBe(2);
   });
 
-  it("summary is strictly `S01EXX Show Name`", () => {
+  it("summary is `Show Name SxEE` — show first, e.g. `Widow's Bay 1x01`", () => {
     const ics = buildCalendar([makeEpisode()]);
-    expect(lines(ics)).toContain("SUMMARY:S01E01 Widow's Bay");
+    expect(lines(ics)).toContain("SUMMARY:Widow's Bay 1x01");
+  });
+
+  it("zero-pads the episode but not the season, and does not truncate past 99", () => {
+    const at = (n: number) =>
+      lines(buildCalendar([makeEpisode({ episodeNumber: n })])).find((l) =>
+        l.startsWith("SUMMARY:")
+      );
+    expect(at(1)).toBe("SUMMARY:Widow's Bay 1x01");
+    expect(at(9)).toBe("SUMMARY:Widow's Bay 1x09");
+    expect(at(10)).toBe("SUMMARY:Widow's Bay 1x10");
+    expect(at(100)).toBe("SUMMARY:Widow's Bay 1x100");
   });
 
   it("sets DTSTART to the exact air instant and DTEND 60 minutes later", () => {
@@ -65,7 +78,7 @@ describe("buildCalendar", () => {
       makeEpisode({ showName: "Cheers, Mate; Yes", episodeName: "A, B; C" }),
     ]);
     const ls = lines(ics);
-    expect(ls).toContain("SUMMARY:S01E01 Cheers\\, Mate\\; Yes");
+    expect(ls).toContain("SUMMARY:Cheers\\, Mate\\; Yes 1x01");
     expect(ls.some((l) => l.startsWith("DESCRIPTION:A\\, B\\; C"))).toBe(true);
   });
 
@@ -83,7 +96,7 @@ describe("buildCalendar", () => {
       expect(raw.length).toBeLessThanOrEqual(75);
     }
     // …but unfolded, the summary is intact.
-    expect(lines(ics)).toContain(`SUMMARY:S01E01 ${longName}`);
+    expect(lines(ics)).toContain(`SUMMARY:${longName} 1x01`);
   });
 
   it("handles an empty episode list (valid, event-free calendar)", () => {

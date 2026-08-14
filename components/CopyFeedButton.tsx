@@ -48,7 +48,8 @@ export default function CopyFeedButton() {
     <button
       type="button"
       onClick={copy}
-      className="inline-flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-2 text-sm font-medium text-neutral-100 transition hover:border-neutral-500 hover:bg-neutral-800 focus:outline-none focus:ring-2 focus:ring-neutral-500"
+      // min-h-11 keeps the target at the 44px AAA touch size (SC 2.5.5).
+      className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-2 text-base font-medium text-neutral-50 transition hover:border-neutral-500 hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-950"
       aria-live="polite"
     >
       <svg

@@ -15,8 +15,8 @@ export interface AllowedService {
 }
 
 /**
- * A single Season 1 episode that airs inside the rolling 14-day window,
- * fully resolved and ready for display and iCal export.
+ * A single Season 1 episode airing inside the displayed range, fully resolved
+ * and ready for display and iCal export.
  */
 export interface Episode {
   /** Stable id: `${showId}-S01E${episodeNumber}`. Used as a React key and iCal UID seed. */
@@ -24,6 +24,10 @@ export interface Episode {
   showId: number;
   showName: string;
   episodeName: string;
+  /** TMDB episode synopsis, shown on desktop hover. Null when TMDB has none. */
+  episodeOverview: string | null;
+  /** TMDB series synopsis — shown on hover for premieres, to introduce the show. */
+  showOverview: string | null;
   seasonNumber: 1;
   episodeNumber: number;
   /** e.g. "S01E01" */

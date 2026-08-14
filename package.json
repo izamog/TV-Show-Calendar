@@ -2,7 +2,7 @@
   "name": "tv-shows-tracker",
   "version": "1.0.0",
   "private": true,
-  "description": "Rolling 14-day TV episode tracker with TMDB data and an iCal feed.",
+  "description": "Monthly TV episode calendar with TMDB data and an iCal feed.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

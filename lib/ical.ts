@@ -7,12 +7,13 @@ import type { Episode } from "./types";
  * Times are emitted as UTC (`...Z`) computed from the exact air instant, which
  * is an unambiguous representation of the moment: calendar apps localise it to
  * the viewer's zone and fire notifications at the true air time regardless of
- * where the subscriber is. Each VEVENT summary is strictly `S01EXX Show Name`.
+ * where the subscriber is. Each VEVENT summary is `Show Name 1x01` — the show
+ * first so events are readable when a calendar truncates them.
  */
 
 /** Default on-screen block length for an episode, in minutes. */
 const EVENT_DURATION_MINUTES = 60;
-const PRODID = "-//tv-shows-tracker//Rolling 14-day TV//EN";
+const PRODID = "-//tv-shows-tracker//TV Show Calendar//EN";
 
 /** Escape a value for an ICS text field per RFC 5545 §3.3.11. */
 function escapeText(value: string): string {
@@ -38,6 +39,15 @@ function foldLine(line: string): string {
   return chunks.join("\r\n");
 }
 
+/**
+ * Season/episode label in `1x01` form: season unpadded, episode zero-padded to
+ * at least two digits so a season sorts and reads consistently. A 100th episode
+ * widens to `1x100` rather than being truncated.
+ */
+function seasonEpisodeLabel(ep: Episode): string {
+  return `${ep.seasonNumber}x${String(ep.episodeNumber).padStart(2, "0")}`;
+}
+
 export function buildCalendar(episodes: Episode[], dtstampMs: number = Date.now()): string {
   const dtstamp = formatIcsUtc(dtstampMs);
 
@@ -47,14 +57,14 @@ export function buildCalendar(episodes: Episode[], dtstampMs: number = Date.now(
     `PRODID:${PRODID}`,
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
-    "X-WR-CALNAME:TV — Next 14 Days",
+    "X-WR-CALNAME:TV Show Calendar",
     "X-WR-TIMEZONE:Europe/London",
   ];
 
   for (const ep of episodes) {
     const start = ep.airInstantUtcMs;
     const end = start + EVENT_DURATION_MINUTES * 60_000;
-    const summary = `${ep.code} ${ep.showName}`;
+    const summary = `${ep.showName} ${seasonEpisodeLabel(ep)}`;
     const description = `${ep.episodeName} · ${ep.serviceName} · ${ep.seasonEpisodeCount} episodes in Season 1`;
 
     lines.push(
