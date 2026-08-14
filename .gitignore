@@ -32,3 +32,9 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
+
+# Added by `vercel link` — broader than the .env*.local rule above, so it also
+# catches .env, .env.production, and the VERCEL_OIDC_TOKEN it writes locally.
+.env*
+# …but the committed template must stay visible to new contributors.
+!.env.local.example
