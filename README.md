@@ -164,6 +164,33 @@ this as a considered implementation rather than a certified audit.
    cached for an hour upstream, and the feed sets
    `s-maxage=3600, stale-while-revalidate` for CDN caching.
 
+## Scheduled refresh
+
+TMDB responses are cached for an hour (`next: { revalidate: 3600 }`), so any
+request older than that refetches — picking up new shows, new episodes, and
+changed titles, air dates and synopses. Nothing is stored incrementally: the
+whole set is refetched and the *responses* are cached, which is why edits to
+already-known episodes are never missed.
+
+That refresh is lazy, though — it only happens when something asks. A daily
+Vercel Cron (`vercel.json`) guarantees it regardless of traffic:
+
+```json
+{ "crons": [{ "path": "/api/refresh", "schedule": "0 6 * * *" }] }
+```
+
+`GET /api/refresh` re-runs the TMDB fetches and returns a small JSON summary
+(`{ ok, refreshedAt, episodeCount, durationMs }`). It exists as a separate
+endpoint rather than pointing the cron at `/api/calendar` because that route
+sets `s-maxage=3600` — a scheduled request could be answered by the CDN without
+the origin ever running, so the cron would silently do nothing. This route is
+`no-store`. It warms the same shared Data Cache the page and feed read.
+
+Set a **`CRON_SECRET`** environment variable in Vercel to lock the endpoint down;
+Vercel automatically sends it as `Authorization: Bearer <secret>` on scheduled
+invocations. If the variable is unset the endpoint stays open, which is harmless
+(it only refreshes a cache) but leaves TMDB quota open to casual abuse.
+
 ## Notes & assumptions
 
 - TMDB episodes expose only a plain `air_date` (no time). Defaults are applied
