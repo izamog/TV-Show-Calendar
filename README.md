@@ -188,8 +188,17 @@ the origin ever running, so the cron would silently do nothing. This route is
 
 Set a **`CRON_SECRET`** environment variable in Vercel to lock the endpoint down;
 Vercel automatically sends it as `Authorization: Bearer <secret>` on scheduled
-invocations. If the variable is unset the endpoint stays open, which is harmless
-(it only refreshes a cache) but leaves TMDB quota open to casual abuse.
+invocations, so the cron keeps working while everything else gets a 401. If the
+variable is unset the endpoint stays open, which is harmless (it only refreshes
+a cache) but leaves TMDB quota open to casual abuse. Generate one without it
+touching your shell history or a file:
+
+```bash
+openssl rand -base64 32 | tr -d '\n' | vercel env add CRON_SECRET production
+```
+
+Environment variable changes only take effect on a **new deployment** — set it,
+then redeploy, or the endpoint will keep answering unauthenticated requests.
 
 ## Notes & assumptions
 
