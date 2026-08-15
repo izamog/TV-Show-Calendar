@@ -74,6 +74,7 @@ lib/
   grouping.ts             Per-show-per-day card capping
   tmdb.ts                 TMDB fetching, filtering, Episode[] assembly
   ical.ts                 RFC 5545 feed builder
+  airtable.ts             Upserts the season feed into an Airtable table
   types.ts                Shared domain types
 ```
 
@@ -99,6 +100,9 @@ Set **either** credential (the v4 read token is preferred when both are set):
 | `TMDB_API_KEY`            | one of these two    | TMDB **v3** API key.                             |
 | `TMDB_READ_ACCESS_TOKEN`  | one of these two    | TMDB **v4** read access token (Bearer JWT).      |
 | `NEXT_PUBLIC_SITE_URL`    | no                  | Only for custom domains; the copy button reads the live origin at runtime, so this is normally unnecessary. |
+| `AIRTABLE_TOKEN`          | no                  | Enables the Airtable sync. PAT with `data.records:write`.        |
+| `AIRTABLE_BASE_ID`        | no                  | `app…` id of the destination base.                               |
+| `AIRTABLE_TABLE_ID`       | no                  | `tbl…` id of the destination table.                              |
 
 Get credentials at <https://www.themoviedb.org/settings/api>.
 
@@ -162,32 +166,65 @@ the shape polling integrations expect — they treat each element as one item an
 dedupe on `id`, so re-polling will not create duplicate rows. It is CDN-cached
 for an hour, so polling it frequently does not translate into TMDB traffic.
 
-### Sending it to Airtable with Zapier
+## Airtable sync
 
-1. **Trigger:** *Webhooks by Zapier → Retrieve Poll*, URL
-   `https://<your-deployment>/api/shows`. This GETs the URL on a schedule and
-   emits each array element as a separate item. Leave "Key" blank — the
-   response is already a top-level array — and set "Deduplication Key" to `id`.
-2. **Action:** *Airtable → Create Record*, mapping the fields straight across:
+The daily cron pushes the same season records into an Airtable table, so the
+tracker stays current without anyone opening a browser.
 
-   | Airtable field         | Zapier value            |
-   | ---------------------- | ----------------------- |
-   | Name                   | `name`                  |
-   | # of episodes          | `episodeCount`          |
-   | Season #               | `seasonNumber`          |
-   | First episode air date | `firstEpisodeAirDate`   |
-   | Season finish date     | `seasonFinishDate`      |
-   | First third ends       | `firstThirdAirDate`     |
-   | Network                | `network`               |
+This runs inside the app rather than through Zapier, Make or n8n. The cron is
+already awake to refresh TMDB, so syncing in the same run needs no extra
+service, no per-task quota, and no second Airtable authorisation to keep
+pointed at the right account. Zapier in particular puts its Webhooks app behind
+a paid plan, which makes polling `/api/shows` from there a non-starter on the
+free tier.
 
-Make the three date columns Airtable **Date** fields set to ISO (`YYYY-MM-DD`)
-formatting; they arrive as ISO strings and Airtable parses them directly.
+Set `AIRTABLE_TOKEN`, `AIRTABLE_BASE_ID` and `AIRTABLE_TABLE_ID` to enable it.
+Leave any of them unset and the sync is skipped silently — the calendar and both
+feeds work exactly as before, which is what a fork with only a TMDB key gets.
 
-TMDB revises air dates as schedules firm up, so a row created today can go
-stale. To keep rows current, add a (hideable) text column holding `id` and
-swap the Create step for *Airtable → Find Record* on that column followed by
-*Create or Update Record*. Without a stored `id` there is nothing for Airtable
-to match on, and a rescheduled show becomes a second row.
+### How rows are matched
+
+Records are upserted on **`TMDB ID` + `Season #`** together. A show may
+legitimately appear more than once (a second season is a separate row), but
+only ever once per season, so the pair is the natural key. Re-running the sync
+updates rows in place rather than duplicating them, which matters because TMDB
+revises air dates as schedules firm up.
+
+Note this is deliberately *not* the `Feed Key` formula column, even though it
+holds exactly that pair joined together: Airtable rejects computed fields in
+`fieldsToMergeOn`. `Feed Key` is still useful for reading and filtering by eye.
+
+### Column mapping
+
+| Airtable column | Feed field              |
+| --------------- | ----------------------- |
+| Name            | `name`                  |
+| TMDB ID         | `showId`                |
+| Season #        | `seasonNumber`          |
+| # of Episodes   | `episodeCount`          |
+| Air Date        | `firstEpisodeAirDate`   |
+| Finish Date     | `seasonFinishDate`      |
+| 1/3rd Date      | `firstThirdAirDate`     |
+| Network         | `network`               |
+
+The date columns must be Airtable **Date** fields; values arrive as ISO
+`YYYY-MM-DD` strings and Airtable parses them directly. `Feed Key` and
+`1/3rd Episode` are formulas and are never written to — the API rejects writes
+to computed fields, which would fail the whole batch.
+
+`Network` is a **single select**, and `typecast` is deliberately off so the
+sync cannot invent options in a list that is curated by hand. The trade-off is
+that **adding a service to `lib/config.ts` requires adding the matching option
+in Airtable**, or that batch will fail with `INVALID_MULTIPLE_CHOICE_OPTIONS`.
+A failing batch is logged and skipped so the rest of the feed still syncs.
+
+`GET /api/refresh` reports what happened:
+
+```json
+{ "ok": true, "episodeCount": 65, "airtable": { "created": 2, "updated": 10, "failed": 0 } }
+```
+
+`airtable` is `null` when the integration is not configured.
 
 ## Testing
 

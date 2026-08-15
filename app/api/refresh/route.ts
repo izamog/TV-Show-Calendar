@@ -1,4 +1,9 @@
-import { getFeedEpisodes } from "@/lib/tmdb";
+import {
+  readAirtableConfig,
+  syncShowSeasons,
+  type SyncResult,
+} from "@/lib/airtable";
+import { getFeedEpisodes, getFeedShowSeasons } from "@/lib/tmdb";
 
 /**
  * Cron target that forces the TMDB data to refresh.
@@ -30,10 +35,25 @@ export async function GET(request: Request): Promise<Response> {
   const startedAt = Date.now();
   try {
     const episodes = await getFeedEpisodes();
+
+    // Push the season feed to Airtable in the same run. The cron is already
+    // awake and the TMDB responses are already warm, so this costs one extra
+    // set of Airtable writes rather than a second scheduled job — and keeps the
+    // sync off any third-party automation service's task quota.
+    const airtableConfig = readAirtableConfig();
+    let airtable: SyncResult | null = null;
+    if (airtableConfig) {
+      const seasons = await getFeedShowSeasons();
+      airtable = await syncShowSeasons(seasons, airtableConfig);
+    }
+
     const body = {
       ok: true,
       refreshedAt: new Date().toISOString(),
       episodeCount: episodes.length,
+      // null when Airtable credentials are not configured, which is a valid
+      // deployment rather than a failure.
+      airtable,
       durationMs: Date.now() - startedAt,
     };
     console.log("[api/refresh]", JSON.stringify(body));
