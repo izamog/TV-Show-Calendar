@@ -42,7 +42,9 @@ show that day out of the cell. The cap is per show per day, so other shows on
 the same date are unaffected (`MAX_CARDS_PER_SHOW_PER_DAY` in `lib/grouping.ts`).
 
 **Allowed services:** Apple TV+, Peacock, Paramount+, HBO, Max, Syfy, Hulu, FX,
-Disney+, Lionsgate+, Prime Video.
+Disney+, Starz, Prime Video, AMC, AMC+, MGM+.
+
+Netflix is deliberately excluded, not an oversight.
 
 A show must clear all of these to appear (all configurable in `lib/config.ts`):
 

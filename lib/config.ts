@@ -24,8 +24,17 @@ export const ALLOWED_SERVICES: AllowedService[] = [
   { tmdbNetworkId: 453, displayName: "Hulu", kind: "streaming" },
   { tmdbNetworkId: 88, displayName: "FX", kind: "broadcast" },
   { tmdbNetworkId: 2739, displayName: "Disney+", kind: "streaming" },
-  { tmdbNetworkId: 318, displayName: "Lionsgate+", kind: "streaming" },
+  // TMDB 318 is named "STARZ". It was branded Lionsgate+ internationally from
+  // 2022 and reverted in 2023; the id never changed, so this is a rename of an
+  // existing entry, not a new network.
+  { tmdbNetworkId: 318, displayName: "Starz", kind: "broadcast" },
   { tmdbNetworkId: 1024, displayName: "Prime Video", kind: "streaming" },
+  { tmdbNetworkId: 174, displayName: "AMC", kind: "broadcast" },
+  { tmdbNetworkId: 4661, displayName: "AMC+", kind: "streaming" },
+  // MGM+ shows also carry the legacy id 922 ("Epix"). Only 6219 is allowed:
+  // TMDB lists Epix first, and pickPrimaryService takes the first allowed
+  // network, so allowing both would badge these shows as "Epix".
+  { tmdbNetworkId: 6219, displayName: "MGM+", kind: "broadcast" },
 ];
 
 /** Fast lookup from TMDB network id -> allowed service. */
