@@ -3,6 +3,8 @@ import {
   isScripted,
   isReturningSeries,
   hasExcludedKeyword,
+  seasonAirDateRange,
+  firstThirdMarker,
   type TmdbShowDetails,
 } from "./tmdb";
 
@@ -105,5 +107,142 @@ describe("hasExcludedKeyword", () => {
       hasExcludedKeyword(makeShow({ keywords: { results: [{ id: 11162, name: "miniseries" }] } }))
     ).toBe(false);
     expect(hasExcludedKeyword(makeShow({ keywords: undefined }))).toBe(false);
+  });
+});
+
+describe("seasonAirDateRange — whole-season premiere and finale dates", () => {
+  it("returns the first and last air date of the season", () => {
+    expect(
+      seasonAirDateRange([
+        { air_date: "2026-09-07" },
+        { air_date: "2026-09-14" },
+        { air_date: "2026-09-21" },
+      ])
+    ).toEqual({ firstEpisodeAirDate: "2026-09-07", seasonFinishDate: "2026-09-21" });
+  });
+
+  /**
+   * TMDB does not guarantee episodes arrive in air order, and a binge drop can
+   * list several episodes on one date, so the range is computed by sorting
+   * rather than by trusting position.
+   */
+  it("does not assume the episode list is already in air order", () => {
+    expect(
+      seasonAirDateRange([
+        { air_date: "2026-09-21" },
+        { air_date: "2026-09-07" },
+        { air_date: "2026-09-14" },
+      ])
+    ).toEqual({ firstEpisodeAirDate: "2026-09-07", seasonFinishDate: "2026-09-21" });
+  });
+
+  it("handles a full-season drop where every episode shares one date", () => {
+    expect(
+      seasonAirDateRange([{ air_date: "2026-09-07" }, { air_date: "2026-09-07" }])
+    ).toEqual({ firstEpisodeAirDate: "2026-09-07", seasonFinishDate: "2026-09-07" });
+  });
+
+  /**
+   * A season with an announced premiere but an unscheduled back half is normal.
+   * The dated episodes still give a real premiere; the finale is simply the
+   * latest date known so far rather than null.
+   */
+  it("ignores undated episodes instead of treating them as a gap", () => {
+    expect(
+      seasonAirDateRange([
+        { air_date: "2026-09-07" },
+        { air_date: null },
+        { air_date: "2026-09-14" },
+        {},
+        { air_date: "  " },
+      ])
+    ).toEqual({ firstEpisodeAirDate: "2026-09-07", seasonFinishDate: "2026-09-14" });
+  });
+
+  it("returns nulls when no episode has a date at all", () => {
+    expect(seasonAirDateRange([])).toEqual({
+      firstEpisodeAirDate: null,
+      seasonFinishDate: null,
+    });
+    expect(seasonAirDateRange([{ air_date: null }])).toEqual({
+      firstEpisodeAirDate: null,
+      seasonFinishDate: null,
+    });
+  });
+});
+
+describe("firstThirdMarker — ceil(episodeCount / 3), rounded UP", () => {
+  /** Build a season of `n` episodes airing weekly from 2026-09-07. */
+  function season(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      episode_number: i + 1,
+      air_date: new Date(Date.UTC(2026, 8, 7) + i * 7 * 86_400_000)
+        .toISOString()
+        .slice(0, 10),
+    }));
+  }
+
+  /** The three cases that defined the rule. */
+  it.each([
+    [10, 4],
+    [9, 3],
+    [8, 3],
+  ])("a %i-episode season marks at episode %i", (count, expected) => {
+    expect(firstThirdMarker(season(count)).firstThirdEpisodeNumber).toBe(expected);
+  });
+
+  it("rounds up rather than down or to nearest", () => {
+    // Rounding down would give 3, 3, 4; nearest would give 3, 4, 4.
+    expect(firstThirdMarker(season(10)).firstThirdEpisodeNumber).toBe(4);
+    expect(firstThirdMarker(season(11)).firstThirdEpisodeNumber).toBe(4);
+    expect(firstThirdMarker(season(13)).firstThirdEpisodeNumber).toBe(5);
+  });
+
+  it("marks an exact multiple of three at the true third", () => {
+    expect(firstThirdMarker(season(6)).firstThirdEpisodeNumber).toBe(2);
+    expect(firstThirdMarker(season(12)).firstThirdEpisodeNumber).toBe(4);
+  });
+
+  it("never marks below episode 1, even for a very short season", () => {
+    expect(firstThirdMarker(season(1)).firstThirdEpisodeNumber).toBe(1);
+    expect(firstThirdMarker(season(2)).firstThirdEpisodeNumber).toBe(1);
+  });
+
+  it("returns that episode's air date", () => {
+    // Episode 4 of 10, four weeks after the 2026-09-07 premiere.
+    expect(firstThirdMarker(season(10))).toEqual({
+      firstThirdEpisodeNumber: 4,
+      firstThirdAirDate: "2026-09-28",
+    });
+  });
+
+  /**
+   * TMDB does not guarantee the season payload is ordered, and reading by array
+   * position instead of episode number would silently return another episode's
+   * date — a wrong value that still looks plausible in a table.
+   */
+  it("picks by episode number, not array position", () => {
+    const shuffled = [...season(9)].reverse();
+    expect(firstThirdMarker(shuffled)).toEqual({
+      firstThirdEpisodeNumber: 3,
+      firstThirdAirDate: "2026-09-21",
+    });
+  });
+
+  it("reports the episode but a null date when that episode is unscheduled", () => {
+    const eps = season(9).map((ep) =>
+      ep.episode_number === 3 ? { ...ep, air_date: null } : ep
+    );
+    expect(firstThirdMarker(eps)).toEqual({
+      firstThirdEpisodeNumber: 3,
+      firstThirdAirDate: null,
+    });
+  });
+
+  it("returns nulls for an empty season", () => {
+    expect(firstThirdMarker([])).toEqual({
+      firstThirdEpisodeNumber: null,
+      firstThirdAirDate: null,
+    });
   });
 });

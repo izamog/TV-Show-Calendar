@@ -15,7 +15,7 @@ import {
   londonDateKey,
   resolveAirInstantUtcMs,
 } from "./dates";
-import type { Episode, ServiceKind } from "./types";
+import type { Episode, ServiceKind, ShowSeason } from "./types";
 
 /**
  * TMDB data-fetching + processing layer.
@@ -217,17 +217,80 @@ function cleanOverview(value: string | null | undefined): string | null {
 }
 
 /**
- * Fetch, filter, and resolve every Season 1 episode airing between `startKey`
- * and `endKey` (inclusive, London calendar dates) on an allowed
- * English-language scripted show.
+ * First and last air date across a whole season's episodes.
  *
- * Returns episodes sorted by air instant. Never throws for a single bad show —
- * per-show failures are logged and skipped so one outage cannot blank the grid.
+ * Deliberately spans every episode TMDB lists, not the ones inside a queried
+ * range: a season that starts before the range or finishes after it must still
+ * report its real premiere and finale, since that is the season-level fact a
+ * downstream table is recording.
+ *
+ * TMDB air dates are zero-padded `YYYY-MM-DD`, so lexicographic ordering is
+ * chronological and no date parsing (or timezone) is involved. Undated
+ * episodes — common for an unscheduled back half of a season — are ignored
+ * rather than treated as a gap.
  */
-export async function getEpisodesInRange(
+export function seasonAirDateRange(
+  episodes: { air_date?: string | null }[]
+): { firstEpisodeAirDate: string | null; seasonFinishDate: string | null } {
+  const dates = episodes
+    .map((ep) => ep.air_date?.trim())
+    .filter((d): d is string => Boolean(d))
+    .sort();
+  return {
+    firstEpisodeAirDate: dates[0] ?? null,
+    seasonFinishDate: dates[dates.length - 1] ?? null,
+  };
+}
+
+/**
+ * The episode that ends the season's first third, and when it airs.
+ *
+ * The marker is `ceil(episodeCount / 3)` — round UP, so the first third is
+ * always a whole episode and never lands mid-episode. A 10-episode season
+ * marks at episode 4 (3.33 rounded up), while both 9 and 8 mark at episode 3.
+ *
+ * Position is taken by `episode_number` rather than array order, because TMDB
+ * does not guarantee the season payload is ordered and a mis-ordered list would
+ * silently return the wrong episode's date. Null when the season is empty or
+ * that particular episode has no announced air date yet.
+ */
+export function firstThirdMarker(
+  episodes: { episode_number: number; air_date?: string | null }[]
+): { firstThirdEpisodeNumber: number | null; firstThirdAirDate: string | null } {
+  if (episodes.length === 0) {
+    return { firstThirdEpisodeNumber: null, firstThirdAirDate: null };
+  }
+  const ordered = [...episodes].sort((a, b) => a.episode_number - b.episode_number);
+  const marker = ordered[Math.ceil(ordered.length / 3) - 1];
+  return {
+    firstThirdEpisodeNumber: marker.episode_number,
+    firstThirdAirDate: marker.air_date?.trim() || null,
+  };
+}
+
+/** One candidate show that survived filtering: its season summary and its in-range episodes. */
+interface ResolvedShow {
+  season: ShowSeason;
+  /** Episodes falling inside the queried range. Empty when none do. */
+  episodes: Episode[];
+}
+
+/**
+ * Fetch, filter, and resolve every allowed show with Season 1 activity between
+ * `startKey` and `endKey` (inclusive, London calendar dates), returning both
+ * the season-level summary and the in-range episodes for each.
+ *
+ * Both views come from this single pass because they need the exact same
+ * discovery, filtering and season fetch — splitting them would double the TMDB
+ * traffic to answer the same question twice.
+ *
+ * Never throws for a single bad show — per-show failures are logged and skipped
+ * so one outage cannot blank the grid.
+ */
+async function resolveShowsInRange(
   startKey: string,
   endKey: string
-): Promise<Episode[]> {
+): Promise<ResolvedShow[]> {
   const auth = readAuth();
 
   const rangeDays = new Set<string>();
@@ -266,7 +329,7 @@ export async function getEpisodesInRange(
   const perShow = await mapWithConcurrency(
     Array.from(candidateIds),
     CONCURRENCY,
-    async (showId): Promise<Episode[]> => {
+    async (showId): Promise<ResolvedShow | null> => {
       try {
         const details = await tmdbGet<TmdbShowDetails>(
           `/tv/${showId}`,
@@ -275,12 +338,12 @@ export async function getEpisodesInRange(
         );
 
         // Re-verify the constraints Discover can be loose about.
-        if (details.original_language && details.original_language !== "en") return [];
-        if (!isScripted(details)) return [];
-        if (isReturningSeries(details)) return [];
-        if (hasExcludedKeyword(details)) return [];
+        if (details.original_language && details.original_language !== "en") return null;
+        if (!isScripted(details)) return null;
+        if (isReturningSeries(details)) return null;
+        if (hasExcludedKeyword(details)) return null;
         const service = pickPrimaryService(details.networks);
-        if (!service) return [];
+        if (!service) return null;
 
         const showOverview = cleanOverview(details.overview);
 
@@ -293,7 +356,7 @@ export async function getEpisodesInRange(
         const seasonEpisodeCount = episodes.length;
 
         // A run this short is a special or a two-parter, not a season.
-        if (seasonEpisodeCount < MIN_SEASON_EPISODES) return [];
+        if (seasonEpisodeCount < MIN_SEASON_EPISODES) return null;
 
         const out: Episode[] = [];
         for (const ep of episodes) {
@@ -324,15 +387,71 @@ export async function getEpisodesInRange(
             isPremiere: ep.episode_number === 1,
           });
         }
-        return out;
+        return {
+          season: {
+            id: `${showId}-S01`,
+            showId,
+            name: details.name,
+            seasonNumber: 1,
+            episodeCount: seasonEpisodeCount,
+            ...seasonAirDateRange(episodes),
+            ...firstThirdMarker(episodes),
+            network: service.name,
+          },
+          episodes: out,
+        };
       } catch (err) {
         console.error(`[tmdb] skipping show ${showId}:`, err);
-        return [];
+        return null;
       }
     }
   );
 
-  return perShow.flat().sort((a, b) => a.airInstantUtcMs - b.airInstantUtcMs);
+  return perShow.filter((r): r is ResolvedShow => r !== null);
+}
+
+/**
+ * Fetch, filter, and resolve every Season 1 episode airing between `startKey`
+ * and `endKey` (inclusive, London calendar dates) on an allowed
+ * English-language scripted show.
+ *
+ * Returns episodes sorted by air instant.
+ */
+export async function getEpisodesInRange(
+  startKey: string,
+  endKey: string
+): Promise<Episode[]> {
+  const resolved = await resolveShowsInRange(startKey, endKey);
+  return resolved
+    .flatMap((r) => r.episodes)
+    .sort((a, b) => a.airInstantUtcMs - b.airInstantUtcMs);
+}
+
+/**
+ * Season-level summaries for every show with at least one Season 1 episode in
+ * the range.
+ *
+ * The in-range episode requirement is what makes this a feed of *current* new
+ * shows rather than every candidate Discover returns: a show whose Season 1 has
+ * already finished, or has not started, is not something the calendar covers.
+ * The dates reported are still whole-season, per `seasonAirDateRange`.
+ *
+ * Sorted by premiere date so a downstream table receives rows in the order the
+ * seasons actually start, with undated seasons last.
+ */
+export async function getShowSeasonsInRange(
+  startKey: string,
+  endKey: string
+): Promise<ShowSeason[]> {
+  const resolved = await resolveShowsInRange(startKey, endKey);
+  return resolved
+    .filter((r) => r.episodes.length > 0)
+    .map((r) => r.season)
+    .sort((a, b) =>
+      (a.firstEpisodeAirDate ?? "9999-12-31").localeCompare(
+        b.firstEpisodeAirDate ?? "9999-12-31"
+      )
+    );
 }
 
 /**
@@ -355,6 +474,18 @@ export async function getPeriodEpisodes(now: Date = new Date()): Promise<Episode
 export async function getFeedEpisodes(now: Date = new Date()): Promise<Episode[]> {
   const window = getRollingWindow(0, now);
   return getEpisodesInRange(
+    window.periodStartKey,
+    shiftDayKey(window.periodStartKey, FEED_DAYS - 1)
+  );
+}
+
+/**
+ * Season summaries for `/api/shows`, over the same forward span as the iCal
+ * feed so both public feeds describe the same set of shows.
+ */
+export async function getFeedShowSeasons(now: Date = new Date()): Promise<ShowSeason[]> {
+  const window = getRollingWindow(0, now);
+  return getShowSeasonsInRange(
     window.periodStartKey,
     shiftDayKey(window.periodStartKey, FEED_DAYS - 1)
   );

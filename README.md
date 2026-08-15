@@ -61,6 +61,7 @@ app/
   layout.tsx              Root layout + metadata
   page.tsx                Grid + week nav (server component, live data)
   api/calendar/route.ts   .ics feed endpoint
+  api/shows/route.ts      JSON season feed (one record per show, for automation)
 components/
   CalendarGrid.tsx        Two-week Mon–Sun grid; groups episodes per show
   EpisodeCard.tsx         Single episode card (+ premiere treatment)
@@ -111,6 +112,80 @@ truncates them (the UI shows the show name with a designed S1/E05 chip
 instead), and
 `DTSTART`/`DTEND` carry the exact air instant (emitted in UTC) so reminders fire
 at the true air moment in the subscriber's local zone.
+
+## Show feed (JSON)
+
+`GET /api/shows` returns one record per show — the season-level view, for
+piping into a spreadsheet or database rather than a calendar client. It covers
+the same 60-day forward span as the `.ics` feed.
+
+```json
+[
+  {
+    "id": "95350-S01",
+    "showId": 95350,
+    "name": "Lanterns",
+    "seasonNumber": 1,
+    "episodeCount": 8,
+    "firstEpisodeAirDate": "2026-08-16",
+    "seasonFinishDate": "2026-10-04",
+    "firstThirdEpisodeNumber": 3,
+    "firstThirdAirDate": "2026-08-30",
+    "network": "HBO"
+  }
+]
+```
+
+`firstThirdAirDate` is when the episode ending the season's **first third**
+airs — the marker is `ceil(episodeCount / 3)`, rounded **up** so the first
+third is always a whole episode: episode 4 of a 10-episode season, episode 3 of
+both a 9- and an 8-episode season. `firstThirdEpisodeNumber` carries which
+episode that was, so the date can be checked against its source rather than
+taken on trust.
+
+Two things to know about the dates. They describe the **whole season**, not the
+60-day window: a season that premiered before the window or finishes after it
+still reports its real premiere and finale, because that is the season-level
+fact a table is recording. And they are plain `YYYY-MM-DD` calendar dates with
+no time component — unlike the `.ics` feed, which resolves each episode to an
+exact air instant. Undated episodes (an unscheduled back half of a season is
+common) are ignored, so `seasonFinishDate` is the latest date *known so far*.
+
+A show appears only if it has at least one episode inside the window, which is
+what keeps this a feed of currently-relevant new shows rather than every
+candidate TMDB returns.
+
+The response is a bare top-level array with a stable `id` per record, which is
+the shape polling integrations expect — they treat each element as one item and
+dedupe on `id`, so re-polling will not create duplicate rows. It is CDN-cached
+for an hour, so polling it frequently does not translate into TMDB traffic.
+
+### Sending it to Airtable with Zapier
+
+1. **Trigger:** *Webhooks by Zapier → Retrieve Poll*, URL
+   `https://<your-deployment>/api/shows`. This GETs the URL on a schedule and
+   emits each array element as a separate item. Leave "Key" blank — the
+   response is already a top-level array — and set "Deduplication Key" to `id`.
+2. **Action:** *Airtable → Create Record*, mapping the fields straight across:
+
+   | Airtable field         | Zapier value            |
+   | ---------------------- | ----------------------- |
+   | Name                   | `name`                  |
+   | # of episodes          | `episodeCount`          |
+   | Season #               | `seasonNumber`          |
+   | First episode air date | `firstEpisodeAirDate`   |
+   | Season finish date     | `seasonFinishDate`      |
+   | First third ends       | `firstThirdAirDate`     |
+   | Network                | `network`               |
+
+Make the three date columns Airtable **Date** fields set to ISO (`YYYY-MM-DD`)
+formatting; they arrive as ISO strings and Airtable parses them directly.
+
+TMDB revises air dates as schedules firm up, so a row created today can go
+stale. To keep rows current, add a (hideable) text column holding `id` and
+swap the Create step for *Airtable → Find Record* on that column followed by
+*Create or Update Record*. Without a stored `id` there is nothing for Airtable
+to match on, and a rescheduled show becomes a second row.
 
 ## Testing
 
