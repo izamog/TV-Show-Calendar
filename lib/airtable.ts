@@ -42,6 +42,40 @@ export const FIELD = {
  */
 const MERGE_ON = [FIELD.tmdbId, FIELD.seasonNumber];
 
+/** Written to `Network` when TMDB reports a service the select has no option for. */
+export const UNKNOWN_NETWORK = "UNKNOWN";
+
+/**
+ * The options that exist in the `Network` single-select.
+ *
+ * Mirrored here because the sync must know, before writing, whether a value is
+ * writable — Airtable rejects the whole batch for one unknown option, and
+ * reading the schema on every run would need a broader token scope for a list
+ * that changes about once a year.
+ *
+ * Wider than `ALLOWED_SERVICES` on purpose: "Netflix", "FX on Hulu" and "FX on
+ * Disney" are options the calendar never emits but the table still uses for
+ * rows entered by hand.
+ */
+export const NETWORK_OPTIONS: ReadonlySet<string> = new Set([
+  "Netflix", "Prime Video", "Disney+", "Paramount+", "Peacock",
+  "FX on Hulu", "FX on Disney", "Hulu", "AMC", "HBO",
+  "Apple TV+", "Max", "MGM+", "FX", "Syfy", "Starz", "AMC+",
+  UNKNOWN_NETWORK,
+]);
+
+/**
+ * Map a network onto a writable select option, falling back to `UNKNOWN`.
+ *
+ * Preferred over letting the write fail: a network the table has no option for
+ * is a labelling gap, and losing an otherwise-correct row's dates and episode
+ * counts over it would be a bad trade. The row lands, flagged for a human to
+ * relabel, rather than vanishing.
+ */
+export function toAirtableNetwork(network: string): string {
+  return NETWORK_OPTIONS.has(network) ? network : UNKNOWN_NETWORK;
+}
+
 export interface AirtableConfig {
   token: string;
   baseId: string;
@@ -76,7 +110,7 @@ export function toAirtableFields(season: ShowSeason): Record<string, unknown> {
     [FIELD.airDate]: season.firstEpisodeAirDate,
     [FIELD.finishDate]: season.seasonFinishDate,
     [FIELD.firstThirdDate]: season.firstThirdAirDate,
-    [FIELD.network]: season.network,
+    [FIELD.network]: toAirtableNetwork(season.network),
   };
 }
 
@@ -98,11 +132,12 @@ export interface SyncResult {
  * Upsert every season into Airtable, matching on TMDB ID + Season #.
  *
  * A failing batch is logged and skipped rather than aborting the run, so one
- * bad record cannot stop the rest of the feed from syncing. The most likely
- * cause is a `Network` value with no matching option in the single-select:
- * `typecast` is deliberately NOT set, because silently inventing select options
- * would corrupt a list that is curated by hand. Adding a service to
- * lib/config.ts therefore requires adding the matching Airtable option too.
+ * bad record cannot stop the rest of the feed from syncing.
+ *
+ * `typecast` is deliberately NOT set — it would let Airtable invent select
+ * options and corrupt a list curated by hand. Unwritable `Network` values are
+ * handled before the request instead, by `toAirtableNetwork` folding them to
+ * `UNKNOWN`, so the single most likely cause of a rejected batch cannot arise.
  */
 export async function syncShowSeasons(
   seasons: ShowSeason[],

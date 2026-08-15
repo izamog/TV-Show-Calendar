@@ -213,10 +213,18 @@ The date columns must be Airtable **Date** fields; values arrive as ISO
 to computed fields, which would fail the whole batch.
 
 `Network` is a **single select**, and `typecast` is deliberately off so the
-sync cannot invent options in a list that is curated by hand. The trade-off is
-that **adding a service to `lib/config.ts` requires adding the matching option
-in Airtable**, or that batch will fail with `INVALID_MULTIPLE_CHOICE_OPTIONS`.
-A failing batch is logged and skipped so the rest of the feed still syncs.
+sync cannot invent options in a list that is curated by hand. A network with no
+matching option is written as **`UNKNOWN`** instead. Losing an otherwise-correct
+row's dates and episode counts over a labelling gap would be a bad trade — the
+row lands and a human relabels it, rather than the batch being rejected with
+`INVALID_MULTIPLE_CHOICE_OPTIONS`.
+
+The options are mirrored in `NETWORK_OPTIONS` in `lib/airtable.ts`, because the
+sync has to know a value is writable *before* sending it. A test asserts every
+service in `ALLOWED_SERVICES` has an option there, so adding a network to
+`lib/config.ts` without adding the Airtable option fails CI rather than quietly
+producing a run of `UNKNOWN` rows. `UNKNOWN` remains the runtime net for what
+code cannot see — an option deleted in the Airtable UI.
 
 `GET /api/refresh` reports what happened:
 

@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { FIELD, toAirtableFields, syncShowSeasons, readAirtableConfig } from "./airtable";
+import {
+  FIELD,
+  NETWORK_OPTIONS,
+  toAirtableFields,
+  toAirtableNetwork,
+  syncShowSeasons,
+  readAirtableConfig,
+} from "./airtable";
+import { ALLOWED_SERVICES } from "./config";
 import type { ShowSeason } from "./types";
 
 function makeSeason(overrides: Partial<ShowSeason> = {}): ShowSeason {
@@ -44,12 +52,50 @@ describe("toAirtableFields", () => {
     expect(keys).toHaveLength(8);
   });
 
+  it("folds an unwritable network to UNKNOWN so the row still lands", () => {
+    const fields = toAirtableFields(makeSeason({ network: "BBC Three" }));
+    expect(fields[FIELD.network]).toBe("UNKNOWN");
+    // The rest of the record is untouched — the point is not to lose it.
+    expect(fields[FIELD.name]).toBe("Lanterns");
+    expect(fields[FIELD.airDate]).toBe("2026-08-16");
+  });
+
   it("passes nulls through so an unscheduled finale clears the cell", () => {
     const fields = toAirtableFields(
       makeSeason({ seasonFinishDate: null, firstThirdAirDate: null })
     );
     expect(fields[FIELD.finishDate]).toBeNull();
     expect(fields[FIELD.firstThirdDate]).toBeNull();
+  });
+});
+
+describe("toAirtableNetwork", () => {
+  it("passes through every option the select actually has", () => {
+    for (const option of NETWORK_OPTIONS) {
+      expect(toAirtableNetwork(option)).toBe(option);
+    }
+  });
+
+  it.each(["BBC Three", "Showtime", "", "hbo"])(
+    "folds %o to UNKNOWN",
+    (network) => {
+      expect(toAirtableNetwork(network)).toBe("UNKNOWN");
+    }
+  );
+
+  /**
+   * The real reason UNKNOWN exists is drift: the allowlist lives in config.ts
+   * and the select options live in Airtable, and nothing links them. This
+   * asserts they currently agree, so a service added to config.ts without a
+   * matching Airtable option is caught in CI rather than showing up as a run of
+   * UNKNOWN rows weeks later. UNKNOWN stays as the runtime net for the case
+   * code cannot see: an option deleted in the Airtable UI.
+   */
+  it("has an option for every service the calendar can emit", () => {
+    const missing = ALLOWED_SERVICES.map((s) => s.displayName).filter(
+      (n) => !NETWORK_OPTIONS.has(n)
+    );
+    expect(missing).toEqual([]);
   });
 });
 
