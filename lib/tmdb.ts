@@ -19,7 +19,8 @@ import {
 } from "./dates";
 import { candidateSeasonNumbers, getFavouriteShowIds } from "./favourites";
 import { selectSeasons } from "./fill";
-import { combineRatings, fetchImdbRating } from "./rating";
+import { fetchImdbRating } from "./imdb";
+import { combineRatings } from "./rating";
 import {
   mapWithConcurrency,
   readAuth,
@@ -307,9 +308,11 @@ export function episodesInRange(args: EpisodesInRangeArgs): Episode[] {
 /**
  * Blend TMDB's score with IMDb's for one show.
  *
- * TMDB's half is already in hand from `/tv/{id}`; only the IMDb half costs a
- * request, and that one degrades to null when OMDb is unconfigured or
- * unreachable, leaving a TMDB-only rating rather than no calendar.
+ * TMDB's half is already in hand from `/tv/{id}`. The IMDb half is a lookup in
+ * IMDb's dataset — `external_ids.imdb_id` on a `/tv/{id}` response is the
+ * *series* id, so this is the show's score and never one episode's — and it
+ * degrades to null when the dataset is unreachable, leaving a TMDB-only rating
+ * rather than no calendar.
  */
 async function resolveRating(details: TmdbShowDetails): Promise<Rating> {
   const tmdb =
@@ -412,10 +415,9 @@ async function resolveShowsInRange(
           : qualifyingService(details);
         if (!service) return [];
 
-        // Rated only after the show has qualified, so the OMDb budget is spent
-        // on shows that can actually appear rather than on every candidate
-        // Discover returned. The score is a property of the show, so it is
-        // fetched once even when two seasons fall inside the range.
+        // Rated only after the show has qualified. The score is a property of
+        // the show, so it is resolved once even when two seasons fall inside
+        // the range.
         const rating = await resolveRating(details);
 
         const resolved = await Promise.all(

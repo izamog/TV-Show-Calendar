@@ -1,12 +1,5 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import {
-  combineRatings,
-  fetchImdbRating,
-  hasOmdbKey,
-  MIN_IMDB_VOTES,
-  MIN_TMDB_VOTES,
-  UNRATED,
-} from "./rating";
+import { describe, it, expect } from "vitest";
+import { combineRatings, MIN_IMDB_VOTES, MIN_TMDB_VOTES, UNRATED } from "./rating";
 
 describe("combineRatings", () => {
   it("weights by vote count, so the larger electorate dominates", () => {
@@ -74,89 +67,5 @@ describe("combineRatings", () => {
 
   it("handles a zero-vote source without dividing by zero", () => {
     expect(combineRatings({ rating: 0, votes: 0 }, null)).toEqual(UNRATED);
-  });
-});
-
-describe("fetchImdbRating", () => {
-  const saved = { ...process.env };
-  afterEach(() => {
-    process.env = { ...saved };
-    vi.restoreAllMocks();
-  });
-
-  it("returns null without a key, so an unconfigured deploy still works", async () => {
-    delete process.env.OMDB_API_KEY;
-    expect(hasOmdbKey()).toBe(false);
-    expect(await fetchImdbRating("tt1234567")).toBeNull();
-  });
-
-  it("returns null without an IMDb id", async () => {
-    process.env.OMDB_API_KEY = "key";
-    expect(await fetchImdbRating(null)).toBeNull();
-  });
-
-  it("parses OMDb's comma-grouped vote count", async () => {
-    process.env.OMDB_API_KEY = "key";
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({ Response: "True", imdbRating: "8.4", imdbVotes: "124,301" }),
-        { status: 200 }
-      )
-    );
-    expect(await fetchImdbRating("tt1234567")).toEqual({
-      rating: 8.4,
-      votes: 124_301,
-    });
-  });
-
-  /** OMDb uses the literal string "N/A" for a show nobody has rated yet. */
-  it("treats N/A as no rating rather than NaN", async () => {
-    process.env.OMDB_API_KEY = "key";
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({ Response: "True", imdbRating: "N/A", imdbVotes: "N/A" }),
-        { status: 200 }
-      )
-    );
-    expect(await fetchImdbRating("tt1234567")).toBeNull();
-  });
-
-  /** OMDb signals "no such title" with a 200 and Response:"False". */
-  it("handles OMDb's soft failure", async () => {
-    process.env.OMDB_API_KEY = "key";
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ Response: "False", Error: "Incorrect IMDb ID." }), {
-        status: 200,
-      })
-    );
-    expect(await fetchImdbRating("tt0000000")).toBeNull();
-  });
-
-  it("degrades to null on a rate limit rather than throwing", async () => {
-    process.env.OMDB_API_KEY = "key";
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("limit reached", { status: 401 })
-    );
-    expect(await fetchImdbRating("tt1234567")).toBeNull();
-  });
-
-  it("degrades to null when the request errors, so one show cannot blank the grid", async () => {
-    process.env.OMDB_API_KEY = "key";
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
-    expect(await fetchImdbRating("tt1234567")).toBeNull();
-  });
-
-  it("sends the id and key as query params", async () => {
-    process.env.OMDB_API_KEY = "secret";
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ Response: "True", imdbRating: "7.0", imdbVotes: "1,000" }), {
-        status: 200,
-      })
-    );
-    await fetchImdbRating("tt42");
-    const url = new URL(String(fetchMock.mock.calls[0][0]));
-    expect(url.searchParams.get("i")).toBe("tt42");
-    expect(url.searchParams.get("apikey")).toBe("secret");
   });
 });
