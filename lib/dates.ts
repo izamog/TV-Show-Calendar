@@ -241,6 +241,16 @@ export function londonDateKey(instantUtcMs: number): string {
   return `${year}-${pad(month)}-${pad(day)}`;
 }
 
+/**
+ * Today's London date key. Reading the clock lives here rather than in the page
+ * for the same reason the window does — every date computation belongs in this
+ * module so the page and the feed cannot drift apart. `now` is injectable to
+ * keep it testable, matching getRollingWindow.
+ */
+export function londonTodayKey(now: Date = new Date()): string {
+  return londonDateKey(now.getTime());
+}
+
 /** London clock time for display, e.g. "8:00 PM" or "12:00 AM". */
 export function formatLondonTime(instantUtcMs: number): string {
   return new Intl.DateTimeFormat("en-GB", {

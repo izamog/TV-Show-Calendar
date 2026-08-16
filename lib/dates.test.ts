@@ -6,6 +6,7 @@ import {
   MAX_WEEK_OFFSET,
   resolveAirInstantUtcMs,
   londonDateKey,
+  londonTodayKey,
   formatLondonTime,
   formatColumnHeader,
   formatIcsUtc,
@@ -179,6 +180,22 @@ describe("londonDateKey — grid placement date", () => {
   it("rolls a late-night-UTC instant forward when London is already the next day", () => {
     // 2026-08-13 23:30Z is 2026-08-14 00:30 BST.
     expect(londonDateKey(Date.UTC(2026, 7, 13, 23, 30, 0))).toBe("2026-08-14");
+  });
+});
+
+describe("londonTodayKey — today's grid date", () => {
+  it("uses the London day, not the UTC day, across the midnight boundary", () => {
+    // 2026-08-13 23:30Z is already 2026-08-14 in London under BST.
+    expect(londonTodayKey(new Date(Date.UTC(2026, 7, 13, 23, 30, 0)))).toBe(
+      "2026-08-14"
+    );
+  });
+
+  it("stays on the UTC day in winter, when London is GMT", () => {
+    // 2026-01-13 23:30Z is 23:30 GMT — same civil day.
+    expect(londonTodayKey(new Date(Date.UTC(2026, 0, 13, 23, 30, 0)))).toBe(
+      "2026-01-13"
+    );
   });
 });
 
