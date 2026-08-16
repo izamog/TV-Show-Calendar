@@ -76,7 +76,9 @@ async function tmdbGet<T>(
   if (!auth.bearer && auth.apiKey) url.searchParams.set("api_key", auth.apiKey);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       signal: controller.signal,
