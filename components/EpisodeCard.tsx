@@ -209,8 +209,12 @@ export default function EpisodeCard({ episode }: { episode: Episode }) {
       onKeyDown={(e) => {
         if (e.key === "Escape" && hasSynopsis) setDismissed(true);
       }}
-      onBlur={() => setDismissed(false)}
-      onMouseLeave={() => setDismissed(false)}
+      onBlur={() => {
+        setDismissed(false);
+      }}
+      onMouseLeave={() => {
+        setDismissed(false);
+      }}
     >
       <CardArtwork episode={episode} accent={accent} />
 
