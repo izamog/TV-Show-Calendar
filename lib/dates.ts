@@ -12,8 +12,22 @@ import type { ServiceKind } from "./types";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** The rolling period the calendar covers: 4 Monday–Sunday weeks from this week. */
+/** The rolling period the calendar covers: 4 Monday–Sunday weeks. */
 export const PERIOD_DAYS = 28;
+/**
+ * How many whole weeks BEFORE the current one the period starts.
+ *
+ * The calendar's job is to surface shows for a blog post, and a show's audience
+ * score is the main signal for choosing between them — but nobody votes on an
+ * unaired episode, so a purely forward-looking window is a window in which
+ * almost every show is unrated (13 of 15 in a measured run). Starting a week
+ * back means the shows that premiered most recently arrive carrying a real TMDB
+ * and IMDb score, which is precisely when the rating is worth having.
+ *
+ * The period stays 28 days, so this trades one week of forward view for one
+ * week of rated hindsight rather than widening the range.
+ */
+export const PERIOD_LOOKBACK_WEEKS = 1;
 /** How much of that period is on screen at once: 2 Monday–Sunday weeks. */
 export const VISIBLE_DAYS = 14;
 /** Scroll step for the up/down arrows. */
@@ -24,13 +38,17 @@ export const MAX_WEEK_OFFSET = (PERIOD_DAYS - VISIBLE_DAYS) / DAYS_PER_WEEK;
 /**
  * A resolved rolling window. All day keys are `YYYY-MM-DD` London calendar dates.
  *
- * The *period* is a fixed 28 days beginning on the Monday of the current London
- * week. The *visible* slice is a 14-day (two-week) view into that period, moved
- * one week at a time by the up/down arrows — so the data range never changes as
- * the user scrolls, only which fortnight is on screen.
+ * The *period* is a fixed 28 days beginning on the Monday `PERIOD_LOOKBACK_WEEKS`
+ * weeks before the current London week. The *visible* slice is a 14-day
+ * (two-week) view into that period, moved one week at a time by the up/down
+ * arrows — so the data range never changes as the user scrolls, only which
+ * fortnight is on screen.
  */
 export interface RollingWindow {
-  /** Monday of the current London week — day 0 of the 28-day period. */
+  /**
+   * Day 0 of the 28-day period: the Monday `PERIOD_LOOKBACK_WEEKS` weeks before
+   * the current London week, so it is in the past by design.
+   */
   periodStartKey: string;
   /** Final day of the 28-day period (periodStart + 27). */
   periodEndKey: string;
@@ -106,8 +124,9 @@ function formatRangeLabel(startKey: string, endKey: string): string {
 }
 
 /**
- * The rolling window: a 28-day period starting on the Monday of the current
- * London week, with a 14-day slice visible at `weekOffset`.
+ * The rolling window: a 28-day period starting on the Monday
+ * `PERIOD_LOOKBACK_WEEKS` weeks before the current London week, with a 14-day
+ * slice visible at `weekOffset`.
  *
  * Pass `now` for testability; defaults to the real clock. The period is
  * recomputed from the clock on every call and is never hardcoded.
@@ -123,9 +142,12 @@ export function getRollingWindow(
   // instants — so stepping by whole days never drifts across a DST boundary.
   const today = new Date(Date.UTC(year, month - 1, day));
 
-  // getUTCDay: 0=Sun..6=Sat. Step back to the Monday of this week.
+  // getUTCDay: 0=Sun..6=Sat. Step back to the Monday of this week, then back a
+  // further PERIOD_LOOKBACK_WEEKS so recently-aired (and therefore rated) shows
+  // are inside the period.
   const daysSinceMonday = (today.getUTCDay() + 6) % 7;
-  const periodStart = new Date(today.getTime() - daysSinceMonday * MS_PER_DAY);
+  const daysBack = daysSinceMonday + PERIOD_LOOKBACK_WEEKS * DAYS_PER_WEEK;
+  const periodStart = new Date(today.getTime() - daysBack * MS_PER_DAY);
 
   const periodDayKeys: string[] = [];
   for (let i = 0; i < PERIOD_DAYS; i++) {
@@ -290,6 +312,78 @@ export function formatFullDate(dayKey: string): string {
     month: "long",
     year: "numeric",
   }).format(new Date(Date.UTC(year, month - 1, day, 12, 0, 0)));
+}
+
+/**
+ * Airtable's `WEEKNUM` for a day key, replicated exactly.
+ *
+ * Airtable defaults to Sunday-start weeks with week 1 being the week that
+ * contains 1 January — NOT ISO 8601 weeks, which start on Monday and assign
+ * week 1 by a four-day rule. The two disagree for several days most years, so
+ * using the ISO definition here would silently shift blog slots by a week.
+ */
+export function airtableWeekNum(dayKey: string): number {
+  const [year, month, day] = dayKey.split("-").map((n) => Number(n));
+  const date = Date.UTC(year, month - 1, day);
+  const jan1 = Date.UTC(year, 0, 1);
+  // The Sunday on or before 1 January starts week 1.
+  const week1Start = jan1 - new Date(jan1).getUTCDay() * MS_PER_DAY;
+  return Math.floor((date - week1Start) / (7 * MS_PER_DAY)) + 1;
+}
+
+/**
+ * The blog post slot a season falls into, as a `YYYY-MM-DD` Sunday.
+ *
+ * Mirrors the `Suggested date` formula chain in the Airtable table, which is
+ * the authority — the column is computed there and this must agree with it or
+ * the calendar would group shows into slots Airtable disagrees with:
+ *
+ *   Sunday         = DATEADD({1/3rd Date}, 7 - WEEKDAY({1/3rd Date}), 'days')
+ *   Suggested date = IF(MOD(WEEKNUM({Sunday}),2)=0, {Sunday}+1 week, {Sunday})
+ *
+ * In words: the next Sunday strictly after the 1/3rd date, pushed on a week
+ * when that Sunday lands in an even week number — so posts only ever fall on
+ * odd-week Sundays, a fortnightly cadence.
+ *
+ * Two behaviours are inherited deliberately rather than "fixed":
+ *   - A 1/3rd date that IS a Sunday yields `7 - 0 = 7`, jumping a full week.
+ *   - `WEEKNUM` restarts each January, so one gap a year is 1 or 3 weeks
+ *     rather than 2. Airtable does this today; diverging would split a slot.
+ *
+ * Null when the season has no 1/3rd date yet (an unscheduled back half).
+ */
+export function suggestedPostDate(firstThirdAirDate: string | null): string | null {
+  if (!firstThirdAirDate) return null;
+  const [year, month, day] = firstThirdAirDate.split("-").map((n) => Number(n));
+  const base = Date.UTC(year, month - 1, day);
+  let sunday = base + (7 - new Date(base).getUTCDay()) * MS_PER_DAY;
+  if (airtableWeekNum(civilDayKey(new Date(sunday))) % 2 === 0) {
+    sunday += 7 * MS_PER_DAY;
+  }
+  return civilDayKey(new Date(sunday));
+}
+
+/**
+ * The next `count` blog post slots on or after today, earliest first.
+ *
+ * Walked forward a Sunday at a time rather than stepping two weeks from the
+ * first: the odd-week rule is not a strict 14-day cycle across a year boundary
+ * (see `suggestedPostDate`), so arithmetic stepping would drift every January.
+ */
+export function nextPostSlots(count: number, now: Date = new Date()): string[] {
+  const today = londonTodayKey(now);
+  const [year, month, day] = today.split("-").map((n) => Number(n));
+  let cursor = Date.UTC(year, month - 1, day);
+  // Advance to the first Sunday on or after today.
+  cursor += ((7 - new Date(cursor).getUTCDay()) % 7) * MS_PER_DAY;
+
+  const slots: string[] = [];
+  while (slots.length < count) {
+    const key = civilDayKey(new Date(cursor));
+    if (airtableWeekNum(key) % 2 === 1) slots.push(key);
+    cursor += 7 * MS_PER_DAY;
+  }
+  return slots;
 }
 
 /** ICS UTC timestamp: `YYYYMMDDTHHMMSSZ`. */

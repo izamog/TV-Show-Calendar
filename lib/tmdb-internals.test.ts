@@ -1,10 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import {
-  shiftDayKey,
-  mapWithConcurrency,
-  readAuth,
-  tmdbGet,
-} from "./tmdb";
+import { shiftDayKey } from "./tmdb";
+import { mapWithConcurrency, readAuth, tmdbGet } from "./tmdb-client";
 
 afterEach(() => {
   vi.unstubAllEnvs();

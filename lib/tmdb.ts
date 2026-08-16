@@ -1,5 +1,6 @@
 import {
-  ALLOWED_NETWORK_IDS_OR,
+  CORE_NETWORK_IDS_OR,
+  FILL_NETWORK_IDS_OR,
   ALLOWED_SERVICE_BY_ID,
   EXCLUDED_GENRE_IDS,
   EXCLUDED_GENRE_IDS_CSV,
@@ -14,8 +15,27 @@ import {
   getRollingWindow,
   londonDateKey,
   resolveAirInstantUtcMs,
+  suggestedPostDate,
 } from "./dates";
-import type { Episode, ServiceKind, ShowSeason } from "./types";
+import { candidateSeasonNumbers, getFavouriteShowIds } from "./favourites";
+import { selectSeasons } from "./fill";
+import { combineRatings, fetchImdbRating } from "./rating";
+import {
+  mapWithConcurrency,
+  readAuth,
+  tmdbGet,
+  type DiscoverResponse,
+  type TmdbNetwork,
+  type TmdbSeasonDetails,
+  type TmdbShowDetails,
+} from "./tmdb-client";
+import type {
+  Episode,
+  Rating,
+  ServiceKind,
+  ServiceTier,
+  ShowSeason,
+} from "./types";
 
 /**
  * TMDB data-fetching + processing layer.
@@ -28,8 +48,6 @@ import type { Episode, ServiceKind, ShowSeason } from "./types";
  * lib/dates.ts so every caller shares identical semantics.
  */
 
-const TMDB_BASE = "https://api.themoviedb.org/3";
-const REQUEST_TIMEOUT_MS = 10_000;
 /** How many Discover pages to sweep per range. 3 pages ≈ 60 candidate shows. */
 const DISCOVER_PAGES = 3;
 /** Bound outbound concurrency so we never hammer TMDB with 60 parallel calls. */
@@ -47,122 +65,11 @@ const DISCOVER_LOOKBACK_DAYS = 21;
  */
 const FEED_DAYS = 60;
 
-interface TmdbAuth {
-  /** Bearer token for the Authorization header (v4), if configured. */
-  bearer?: string;
-  /** api_key query param (v3), if configured. */
-  apiKey?: string;
-}
-
-export function readAuth(): TmdbAuth {
-  const bearer = process.env.TMDB_READ_ACCESS_TOKEN?.trim();
-  const apiKey = process.env.TMDB_API_KEY?.trim();
-  if (!bearer && !apiKey) {
-    throw new Error(
-      "Missing TMDB credentials: set TMDB_READ_ACCESS_TOKEN (v4) or TMDB_API_KEY (v3)."
-    );
-  }
-  return { bearer: bearer || undefined, apiKey: apiKey || undefined };
-}
-
-/** GET a TMDB endpoint with auth, a timeout, and meaningful error context. */
-export async function tmdbGet<T>(
-  path: string,
-  params: Record<string, string>,
-  auth: TmdbAuth
-): Promise<T> {
-  const url = new URL(`${TMDB_BASE}${path}`);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  if (!auth.bearer && auth.apiKey) url.searchParams.set("api_key", auth.apiKey);
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, REQUEST_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: auth.bearer
-        ? { Authorization: `Bearer ${auth.bearer}`, Accept: "application/json" }
-        : { Accept: "application/json" },
-      // Cache TMDB responses for an hour; the window only changes daily.
-      next: { revalidate: 3600 },
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(
-        `TMDB ${path} responded ${res.status} ${res.statusText}: ${body.slice(0, 200)}`
-      );
-    }
-    return (await res.json()) as T;
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(`TMDB ${path} timed out after ${REQUEST_TIMEOUT_MS}ms`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Run tasks with bounded concurrency, preserving input order in the result. */
-export async function mapWithConcurrency<I, O>(
-  items: I[],
-  limit: number,
-  worker: (item: I, index: number) => Promise<O>
-): Promise<O[]> {
-  const results = new Array<O>(items.length);
-  let cursor = 0;
-  async function runner(): Promise<void> {
-    while (cursor < items.length) {
-      const index = cursor++;
-      results[index] = await worker(items[index], index);
-    }
-  }
-  const runners = Array.from({ length: Math.min(limit, items.length) }, runner);
-  await Promise.all(runners);
-  return results;
-}
-
-// --- TMDB response shapes (only the fields we use) ---
-
-interface DiscoverResult {
-  id: number;
-  genre_ids?: number[];
-  original_language?: string;
-}
-interface DiscoverResponse {
-  results?: DiscoverResult[];
-  total_pages?: number;
-}
-interface TmdbNetwork {
-  id: number;
+/** A show's primary service, resolved from its TMDB networks. */
+interface ResolvedService {
   name: string;
-}
-export interface TmdbShowDetails {
-  id: number;
-  name: string;
-  original_language?: string;
-  overview?: string | null;
-  /** "Scripted" | "Miniseries" | "Documentary" | "News" | "Reality" | "Talk Show" | "Video". */
-  type?: string | null;
-  /** Seasons aired so far. > 1 means the show is not a new series. */
-  number_of_seasons?: number | null;
-  genres?: { id: number; name: string }[];
-  networks?: TmdbNetwork[];
-  /** Present because we request `append_to_response=keywords`. */
-  keywords?: { results?: { id: number; name: string }[] };
-}
-interface TmdbSeasonEpisode {
-  episode_number: number;
-  name?: string;
-  overview?: string | null;
-  air_date?: string | null;
-  still_path?: string | null;
-}
-export interface TmdbSeasonDetails {
-  episodes?: TmdbSeasonEpisode[];
-  poster_path?: string | null;
+  kind: ServiceKind;
+  tier: ServiceTier;
 }
 
 /** ISO date `YYYY-MM-DD` shifted by whole days from a day key. */
@@ -173,18 +80,35 @@ export function shiftDayKey(dayKey: string, deltaDays: number): string {
 }
 
 /**
- * Choose the primary allowed service for a show. A show can carry several
- * networks; we pick the first that is in our allowlist so the badge is stable.
+ * Choose the primary service for a show. A show can carry several networks; we
+ * pick the first that is on one of our lists so the badge is stable.
+ *
+ * Core beats fill regardless of the order TMDB lists them in. A show can
+ * legitimately carry both — international distribution routinely tags an HBO or
+ * FX series with Netflix outside the US — and taking TMDB's first match would
+ * tier such a show as `fill` on an accident of array order. It would then be
+ * subject to being dropped by the fill logic, silently removing a
+ * core-allowlist show from the calendar. Tie-break by tier, then by TMDB order
+ * within the tier.
  */
 function pickPrimaryService(
   networks: TmdbNetwork[] | undefined
-): { name: string; kind: ServiceKind } | null {
+): ResolvedService | null {
   if (!networks) return null;
+
+  let fallback: ResolvedService | null = null;
   for (const n of networks) {
     const allowed = ALLOWED_SERVICE_BY_ID.get(n.id);
-    if (allowed) return { name: allowed.displayName, kind: allowed.kind };
+    if (!allowed) continue;
+    const resolved = {
+      name: allowed.displayName,
+      kind: allowed.kind,
+      tier: allowed.tier,
+    };
+    if (resolved.tier === "core") return resolved;
+    fallback ??= resolved;
   }
-  return null;
+  return fallback;
 }
 
 /**
@@ -279,7 +203,7 @@ export function firstThirdMarker(
  */
 export function qualifyingService(
   details: TmdbShowDetails
-): { name: string; kind: ServiceKind } | null {
+): ResolvedService | null {
   if (details.original_language && details.original_language !== "en") {
     return null;
   }
@@ -290,21 +214,58 @@ export function qualifyingService(
 }
 
 /**
- * Map a fetched Season 1 into the Episode rows that fall inside `rangeDays`.
+ * The service to badge a favourited show with — which is never a reason to drop
+ * it.
+ *
+ * A favourite reaches the calendar on any network, including ones the allowlist
+ * has never heard of (Bridgerton is Netflix, Severance is Apple TV+, and the
+ * next one might be on a service nobody has added). So this always returns a
+ * service, falling back to TMDB's own first network name, and stamps the
+ * `favourite` tier over whatever tier the network would otherwise imply — a
+ * favourite on Netflix must not be droppable by the fill logic.
+ *
+ * `kind` decides the assumed air time, and an unlisted network gives us nothing
+ * to decide it from. `streaming` (00:00 UTC) is the assumption: it is what the
+ * services most likely to be missing from a hand-written broadcaster list
+ * actually do, and being wrong costs a card sitting at the top of the right day
+ * rather than in the wrong day entirely.
+ */
+export function favouriteService(details: TmdbShowDetails): ResolvedService {
+  const known = pickPrimaryService(details.networks);
+  if (known) return { ...known, tier: "favourite" };
+  return {
+    name: details.networks?.[0]?.name ?? "Unknown",
+    kind: "streaming",
+    tier: "favourite",
+  };
+}
+
+/** `S01E01` — both halves zero-padded to two digits, widening rather than truncating. */
+export function episodeCode(seasonNumber: number, episodeNumber: number): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `S${pad(seasonNumber)}E${pad(episodeNumber)}`;
+}
+
+/**
+ * Map a fetched season into the Episode rows that fall inside `rangeDays`.
  *
  * Pure given its arguments, which is the point: this is where air-date
  * resolution, London date placement and range filtering all land, and it is
  * the part worth testing without reaching for the network.
  */
-export function episodesInRange(args: {
+interface EpisodesInRangeArgs {
   showId: number;
   showName: string;
   showOverview: string | null;
+  seasonNumber: number;
   season: TmdbSeasonDetails;
-  service: { name: string; kind: ServiceKind };
+  service: ResolvedService;
+  rating: Rating;
   rangeDays: ReadonlySet<string>;
-}): Episode[] {
-  const { showId, showName, showOverview, season, service, rangeDays } = args;
+}
+
+export function episodesInRange(args: EpisodesInRangeArgs): Episode[] {
+  const { showId, showName, showOverview, seasonNumber, season, service, rating, rangeDays } = args;
   const episodes = season.episodes ?? [];
   const seasonEpisodeCount = episodes.length;
   const out: Episode[] = [];
@@ -315,7 +276,7 @@ export function episodesInRange(args: {
     const dateKey = londonDateKey(airInstantUtcMs);
     if (!rangeDays.has(dateKey)) continue;
 
-    const code = `S01E${String(ep.episode_number).padStart(2, "0")}`;
+    const code = episodeCode(seasonNumber, ep.episode_number);
     const posterPath = ep.still_path ?? season.poster_path ?? null;
 
     out.push({
@@ -325,13 +286,15 @@ export function episodesInRange(args: {
       episodeName: ep.name?.trim() || `Episode ${ep.episode_number}`,
       episodeOverview: cleanOverview(ep.overview),
       showOverview,
-      seasonNumber: 1,
+      seasonNumber,
       episodeNumber: ep.episode_number,
       code,
       seasonEpisodeCount,
       posterUrl: posterPath ? `${TMDB_IMAGE_BASE}${posterPath}` : null,
       serviceName: service.name,
       serviceKind: service.kind,
+      serviceTier: service.tier,
+      rating,
       airInstantUtcMs,
       londonDateKey: dateKey,
       isPremiere: ep.episode_number === 1,
@@ -341,7 +304,24 @@ export function episodesInRange(args: {
   return out;
 }
 
-/** One candidate show that survived filtering: its season summary and its in-range episodes. */
+/**
+ * Blend TMDB's score with IMDb's for one show.
+ *
+ * TMDB's half is already in hand from `/tv/{id}`; only the IMDb half costs a
+ * request, and that one degrades to null when OMDb is unconfigured or
+ * unreachable, leaving a TMDB-only rating rather than no calendar.
+ */
+async function resolveRating(details: TmdbShowDetails): Promise<Rating> {
+  const tmdb =
+    typeof details.vote_average === "number" &&
+    typeof details.vote_count === "number"
+      ? { rating: details.vote_average, votes: details.vote_count }
+      : null;
+  const imdb = await fetchImdbRating(details.external_ids?.imdb_id);
+  return combineRatings(tmdb, imdb);
+}
+
+/** One candidate season that survived filtering: its summary and its in-range episodes. */
 interface ResolvedShow {
   season: ShowSeason;
   /** Episodes falling inside the queried range. Empty when none do. */
@@ -349,13 +329,20 @@ interface ResolvedShow {
 }
 
 /**
- * Fetch, filter, and resolve every allowed show with Season 1 activity between
+ * Fetch, filter, and resolve every allowed show with activity between
  * `startKey` and `endKey` (inclusive, London calendar dates), returning both
  * the season-level summary and the in-range episodes for each.
  *
  * Both views come from this single pass because they need the exact same
  * discovery, filtering and season fetch — splitting them would double the TMDB
  * traffic to answer the same question twice.
+ *
+ * Two kinds of show arrive here. **Discovered** shows come from Discover on an
+ * allowlisted network and must pass every filter, Season 1 included.
+ * **Favourited** shows come from the owner's TMDB account and pass all of them
+ * unconditionally, on whatever network and in whatever season is currently
+ * airing — a filter exists to guess at what is worth watching, and a favourite
+ * is that question already answered.
  *
  * Never throws for a single bad show — per-show failures are logged and skipped
  * so one outage cannot blank the grid.
@@ -374,127 +361,172 @@ async function resolveShowsInRange(
   const discoverGte = shiftDayKey(startKey, -DISCOVER_LOOKBACK_DAYS);
   const discoverLte = endKey;
 
-  // 1) Discover candidate shows across the allowed networks.
+  // 1) Discover candidate shows, one sweep per tier so a popular fill network
+  //    cannot consume the page budget and starve the core allowlist.
   const candidateIds = new Set<number>();
-  for (let page = 1; page <= DISCOVER_PAGES; page++) {
-    const data = await tmdbGet<DiscoverResponse>(
-      "/discover/tv",
-      {
-        include_adult: "false",
-        include_null_first_air_dates: "false",
-        language: "en-US",
-        with_original_language: "en",
-        with_networks: ALLOWED_NETWORK_IDS_OR,
-        without_genres: EXCLUDED_GENRE_IDS_CSV,
-        without_keywords: EXCLUDED_KEYWORD_IDS_CSV,
-        "first_air_date.gte": discoverGte,
-        "first_air_date.lte": discoverLte,
-        sort_by: "popularity.desc",
-        page: String(page),
-      },
-      auth
-    );
-    for (const r of data.results ?? []) candidateIds.add(r.id);
-    if (data.total_pages !== undefined && page >= data.total_pages) break;
+  for (const networks of [CORE_NETWORK_IDS_OR, FILL_NETWORK_IDS_OR]) {
+    for (let page = 1; page <= DISCOVER_PAGES; page++) {
+      const data = await tmdbGet<DiscoverResponse>(
+        "/discover/tv",
+        {
+          include_adult: "false",
+          include_null_first_air_dates: "false",
+          language: "en-US",
+          with_original_language: "en",
+          with_networks: networks,
+          without_genres: EXCLUDED_GENRE_IDS_CSV,
+          without_keywords: EXCLUDED_KEYWORD_IDS_CSV,
+          "first_air_date.gte": discoverGte,
+          "first_air_date.lte": discoverLte,
+          sort_by: "popularity.desc",
+          page: String(page),
+        },
+        auth
+      );
+      for (const r of data.results ?? []) candidateIds.add(r.id);
+      if (data.total_pages !== undefined && page >= data.total_pages) break;
+    }
   }
 
-  // 2) For each candidate, resolve details + Season 1 episodes in the window.
+  // 2) Add the owner's favourites. Discover would never surface most of them —
+  //    they are on unlisted networks, or well past their first season — which
+  //    is exactly why they are a separate source rather than a filter relaxation.
+  const favouriteIds = await getFavouriteShowIds(auth);
+  for (const id of favouriteIds) candidateIds.add(id);
+
+  // 3) For each candidate, resolve details + the relevant season(s) in the window.
   const perShow = await mapWithConcurrency(
     Array.from(candidateIds),
     CONCURRENCY,
-    async (showId): Promise<ResolvedShow | null> => {
+    async (showId): Promise<ResolvedShow[]> => {
       try {
         const details = await tmdbGet<TmdbShowDetails>(
           `/tv/${showId}`,
-          { language: "en-US", append_to_response: "keywords" },
+          { language: "en-US", append_to_response: "keywords,external_ids" },
           auth
         );
 
-        const service = qualifyingService(details);
-        if (!service) return null;
+        const isFavourite = favouriteIds.has(showId);
+        const service = isFavourite
+          ? favouriteService(details)
+          : qualifyingService(details);
+        if (!service) return [];
 
-        const season = await tmdbGet<TmdbSeasonDetails>(
-          `/tv/${showId}/season/1`,
-          { language: "en-US" },
-          auth
+        // Rated only after the show has qualified, so the OMDb budget is spent
+        // on shows that can actually appear rather than on every candidate
+        // Discover returned. The score is a property of the show, so it is
+        // fetched once even when two seasons fall inside the range.
+        const rating = await resolveRating(details);
+
+        const resolved = await Promise.all(
+          candidateSeasonNumbers(details, isFavourite).map(
+            async (seasonNumber): Promise<ResolvedShow | null> => {
+              const season = await tmdbGet<TmdbSeasonDetails>(
+                `/tv/${showId}/season/${seasonNumber}`,
+                { language: "en-US" },
+                auth
+              );
+              const episodes = season.episodes ?? [];
+
+              // A run this short is a special or a two-parter, not a season —
+              // unless it was favourited, in which case a four-episode run is
+              // still a thing the owner asked to be told about.
+              if (!isFavourite && episodes.length < MIN_SEASON_EPISODES) {
+                return null;
+              }
+
+              const marker = firstThirdMarker(episodes);
+              return {
+                season: {
+                  id: `${showId}-S${String(seasonNumber).padStart(2, "0")}`,
+                  showId,
+                  name: details.name,
+                  seasonNumber,
+                  episodeCount: episodes.length,
+                  ...seasonAirDateRange(episodes),
+                  ...marker,
+                  network: service.name,
+                  serviceTier: service.tier,
+                  rating,
+                  suggestedPostDate: suggestedPostDate(marker.firstThirdAirDate),
+                },
+                episodes: episodesInRange({
+                  showId,
+                  showName: details.name,
+                  showOverview: cleanOverview(details.overview),
+                  seasonNumber,
+                  season,
+                  service,
+                  rating,
+                  rangeDays,
+                }),
+              };
+            }
+          )
         );
-        const episodes = season.episodes ?? [];
 
-        // A run this short is a special or a two-parter, not a season.
-        if (episodes.length < MIN_SEASON_EPISODES) return null;
-
-        return {
-          season: {
-            id: `${showId}-S01`,
-            showId,
-            name: details.name,
-            seasonNumber: 1,
-            episodeCount: episodes.length,
-            ...seasonAirDateRange(episodes),
-            ...firstThirdMarker(episodes),
-            network: service.name,
-          },
-          episodes: episodesInRange({
-            showId,
-            showName: details.name,
-            showOverview: cleanOverview(details.overview),
-            season,
-            service,
-            rangeDays,
-          }),
-        };
+        return resolved.filter((r): r is ResolvedShow => r !== null);
       } catch (err) {
         console.error(`[tmdb] skipping show ${showId}:`, err);
-        return null;
+        return [];
       }
     }
   );
 
-  return perShow.filter((r): r is ResolvedShow => r !== null);
+  return perShow.flat();
 }
 
 /**
- * Fetch, filter, and resolve every Season 1 episode airing between `startKey`
- * and `endKey` (inclusive, London calendar dates) on an allowed
- * English-language scripted show.
+ * The single resolved, fill-selected view of the feed span that every caller
+ * reads from.
  *
- * Returns episodes sorted by air instant.
+ * Resolution ALWAYS covers the full feed span, even for the 28-day page. That
+ * is deliberate and load-bearing: whether a second-tier show earns its place
+ * depends on how many shows share its blog post slot, and a slot's membership
+ * can only be counted over the whole span. Resolving the page over its own
+ * shorter range would count a smaller set, reach a different fill decision, and
+ * show a Netflix row the `.ics` feed and Airtable disagreed about. One span,
+ * one decision, then filter — the same reason the window itself lives only in
+ * lib/dates.ts.
+ *
+ * The extra breadth is close to free: the page's period is a prefix of the feed
+ * span, so both share one set of cached TMDB responses.
  */
-export async function getEpisodesInRange(
-  startKey: string,
-  endKey: string
-): Promise<Episode[]> {
-  const resolved = await resolveShowsInRange(startKey, endKey);
-  return resolved
-    .flatMap((r) => r.episodes)
-    .sort((a, b) => a.airInstantUtcMs - b.airInstantUtcMs);
-}
+async function resolveFeedSelection(now: Date): Promise<{
+  seasons: ShowSeason[];
+  episodes: Episode[];
+}> {
+  const window = getRollingWindow(0, now);
+  const startKey = window.periodStartKey;
+  const endKey = shiftDayKey(startKey, FEED_DAYS - 1);
 
-/**
- * Season-level summaries for every show with at least one Season 1 episode in
- * the range.
- *
- * The in-range episode requirement is what makes this a feed of *current* new
- * shows rather than every candidate Discover returns: a show whose Season 1 has
- * already finished, or has not started, is not something the calendar covers.
- * The dates reported are still whole-season, per `seasonAirDateRange`.
- *
- * Sorted by premiere date so a downstream table receives rows in the order the
- * seasons actually start, with undated seasons last.
- */
-export async function getShowSeasonsInRange(
-  startKey: string,
-  endKey: string
-): Promise<ShowSeason[]> {
   const resolved = await resolveShowsInRange(startKey, endKey);
-  return resolved
-    .filter((r) => r.episodes.length > 0)
-    .map((r) => r.season)
-    .sort((a, b) =>
-      (a.firstEpisodeAirDate ?? "9999-12-31").localeCompare(
-        b.firstEpisodeAirDate ?? "9999-12-31"
-      )
-    );
+
+  // Only shows actually airing in the span are candidates — that requirement is
+  // what makes this a feed of *current* new shows rather than every candidate
+  // Discover returned.
+  const airing = resolved.filter((r) => r.episodes.length > 0);
+  const decision = selectSeasons(
+    airing.map((r) => r.season),
+    { now }
+  );
+  console.log("[tmdb] fill decision", JSON.stringify(decision.slots));
+
+  const keptIds = new Set(decision.selected.map((s) => s.id));
+  const kept = airing.filter((r) => keptIds.has(r.season.id));
+
+  return {
+    seasons: kept
+      .map((r) => r.season)
+      .sort((a, b) =>
+        (a.firstEpisodeAirDate ?? "9999-12-31").localeCompare(
+          b.firstEpisodeAirDate ?? "9999-12-31"
+        )
+      ),
+    episodes: kept
+      .flatMap((r) => r.episodes)
+      .sort((a, b) => a.airInstantUtcMs - b.airInstantUtcMs),
+  };
 }
 
 /**
@@ -506,7 +538,9 @@ export async function getShowSeasonsInRange(
  */
 export async function getPeriodEpisodes(now: Date = new Date()): Promise<Episode[]> {
   const window = getRollingWindow(0, now);
-  return getEpisodesInRange(window.periodStartKey, window.periodEndKey);
+  const period = new Set(window.periodDayKeys);
+  const { episodes } = await resolveFeedSelection(now);
+  return episodes.filter((e) => period.has(e.londonDateKey));
 }
 
 /**
@@ -515,21 +549,17 @@ export async function getPeriodEpisodes(now: Date = new Date()): Promise<Episode
  * navigated; it always runs forward from the current week.
  */
 export async function getFeedEpisodes(now: Date = new Date()): Promise<Episode[]> {
-  const window = getRollingWindow(0, now);
-  return getEpisodesInRange(
-    window.periodStartKey,
-    shiftDayKey(window.periodStartKey, FEED_DAYS - 1)
-  );
+  return (await resolveFeedSelection(now)).episodes;
 }
 
 /**
  * Season summaries for `/api/shows`, over the same forward span as the iCal
  * feed so both public feeds describe the same set of shows.
+ *
+ * Sorted by premiere date so a downstream table receives rows in the order the
+ * seasons actually start, with undated seasons last. The dates reported are
+ * whole-season, per `seasonAirDateRange`.
  */
 export async function getFeedShowSeasons(now: Date = new Date()): Promise<ShowSeason[]> {
-  const window = getRollingWindow(0, now);
-  return getShowSeasonsInRange(
-    window.periodStartKey,
-    shiftDayKey(window.periodStartKey, FEED_DAYS - 1)
-  );
+  return (await resolveFeedSelection(now)).seasons;
 }

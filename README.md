@@ -3,14 +3,17 @@
 [![CI](https://github.com/izamog/TV-Show-Calendar/actions/workflows/ci.yml/badge.svg)](https://github.com/izamog/TV-Show-Calendar/actions/workflows/ci.yml)
 
 A production-ready **Next.js (App Router) + TypeScript** app that shows a
-**rolling four-week calendar** of upcoming **scripted** Season 1 TV episodes on
-a curated set of networks/streamers, plus a live subscribable **iCal feed**.
+**rolling four-week calendar** of **scripted** Season 1 TV episodes on a curated
+set of networks/streamers — plus whatever season is currently airing of the
+shows you have favourited on TMDB — with a live subscribable **iCal feed**.
 
 - **Rolling window:** the period is a fixed **28 days** starting on the Monday
-  of the current London week, recomputed from the clock on every request and
-  never hardcoded. **14 days (two Monday–Sunday rows) are on screen at a time**;
-  the up/down arrows scroll that view one week at a time via `?week=0|1|2`.
-  Out-of-range or malformed values clamp back into the period.
+  **one week before** the current London week, recomputed from the clock on
+  every request and never hardcoded. **14 days (two Monday–Sunday rows) are on
+  screen at a time**; the up/down arrows scroll that view one week at a time via
+  `?week=0|1|2`. Out-of-range or malformed values clamp back into the period.
+  The week of hindsight is what makes ratings usable — see
+  [Ratings](#ratings).
 - **Accessibility:** WCAG 2.1 AA — see the Accessibility section below.
 - **Data:** [TMDB](https://www.themoviedb.org/) (v3 API key **or** v4 read token).
 - **Timezone:** all air times are converted to **Europe/London**, handling the
@@ -23,8 +26,9 @@ a curated set of networks/streamers, plus a live subscribable **iCal feed**.
 For every allowed English-language scripted show, the app pulls all Season 1
 episodes and keeps those whose London air date lands in the displayed grid. Each
 episode card shows the poster/still, London air time, network badge, show name,
-episode name, and a Season 1 progress bar. Series premieres (`S01E01`) get a
-glowing border and a **SERIES PREMIERE** badge.
+episode name, and a season progress bar. Episode 1 gets a glowing border and a
+badge — **SERIES PREMIERE** on a first season, **SEASON PREMIERE** on a
+favourited show's later one.
 
 On desktop, hovering **or keyboard-focusing** a card reveals the episode
 synopsis. The show's own synopsis is shown under an "About the show" heading in
@@ -41,12 +45,116 @@ episodes"** line — otherwise one streamer's batch drop would push every other
 show that day out of the cell. The cap is per show per day, so other shows on
 the same date are unaffected (`MAX_CARDS_PER_SHOW_PER_DAY` in `lib/grouping.ts`).
 
-**Allowed services:** Apple TV+, Peacock, Paramount+, HBO, Max, Syfy, Hulu, FX,
-Disney+, Starz, Prime Video, AMC, AMC+, MGM+.
+**Core services (US):** Apple TV+, Peacock, Paramount+, HBO, Max, Syfy, Hulu,
+FX, Disney+, Starz, Prime Video, AMC, AMC+, MGM+.
 
-Netflix is deliberately excluded, not an oversight.
+**Core services (UK):** BBC, ITV, Channel 4, Channel 5, Sky. Each is a *brand*
+covering several TMDB networks — BBC is One, Two, Three and Four; ITV is ITV1,
+ITV2 and ITVX; Channel 4 is Channel 4 and E4; Sky is Atlantic, Max, Comedy and
+the retired Sky One, which TMDB still tags shows with. They all resolve to the
+one brand name so a drama that moves between BBC One and BBC Two does not label
+itself differently depending on which channel TMDB happened to list first.
 
-A show must clear all of these to appear (all configurable in `lib/config.ts`):
+Every qualifying show on any core service appears, unconditionally.
+
+**Fill services:** Netflix, Stan (AU), Crave (CA). These are discovered on every
+run but do **not** appear by default — they are held back and admitted only to
+top up a thin blog post slot, best-rated first. See
+[Blog post slots and fill](#blog-post-slots-and-fill).
+
+Netflix's exclusion from the core list is deliberate, not an oversight: it
+premieres more scripted Season 1s than the entire core list combined, so
+admitting it wholesale would bury the curated allowlist.
+
+### Favourited shows
+
+The calendar is otherwise a feed of *new* series, which means it will never tell
+you that a show you already follow is back. So every show favourited on the TMDB
+account that issued the read token is pulled in as well, carrying **whichever
+season is currently airing** rather than Season 1.
+
+Favourites bypass every automated filter — the network allowlist, the
+Season-1-only rule, the five-episode minimum and the genre/type exclusions. A
+filter exists to guess at what is worth watching, and a favourite is that
+question already answered by hand, so nothing automated should be able to
+overrule it. In practice this is what admits Bridgerton (Netflix, fill tier),
+Severance (Apple TV+, season 3) and Slow Horses (season 6).
+
+Like core shows they are never dropped by the fill logic, and they **count
+toward** a slot's target rather than sitting on top of it: a favourite is a show
+for the post like any other.
+
+No extra credential is needed. A v4 read access token authenticates as the
+account that issued it, so `/account` yields the account id and the favourites
+endpoint accepts the same bearer — the `session_id` approval flow in TMDB's docs
+is only for apps acting on somebody else's behalf. An install with only a v3
+`TMDB_API_KEY` has no account to read, and one whose owner has favourited
+nothing gets an empty list; both cases degrade quietly to the network-allowlist
+feed.
+
+### Ratings
+
+Each card carries a blended audience score out of 10 — the **vote-weighted
+mean** of TMDB's `vote_average` and IMDb's rating. Weighting by vote count is
+what makes it mean "how well received": IMDb typically carries one to two orders
+of magnitude more votes than TMDB, and a plain average would let the smaller
+electorate move the number just as far.
+
+TMDB's API carries a show's IMDb *id* but never its IMDb *rating*, so the IMDb
+half comes from [OMDb](https://www.omdbapi.com/). With `OMDB_API_KEY` unset the
+score falls back to TMDB alone — degraded, never broken.
+
+A score is ignored below a vote floor (20 on TMDB, 100 on IMDb), and a show with
+neither source above its floor shows no rating at all. That is the normal state
+for a series that has not premiered: **no rating means "not yet rated", not
+"badly rated"**, which is why no "Unrated" chip is drawn.
+
+**This is why the period starts a week in the past.** Nobody votes on an unaired
+episode, so a purely forward-looking window is one in which almost every show is
+unrated and "rank the candidates by rating" has nothing to work with. Including
+the week just gone means the most recently premiered shows arrive carrying real
+scores. The period stays 28 days, so this trades a week of forward view for a
+week of rated hindsight — `PERIOD_LOOKBACK_WEEKS` in `lib/dates.ts` is the knob.
+
+## Blog post slots and fill
+
+The calendar's unit of editorial work is a blog post, and a post covers about
+four shows. Which shows share a post is decided by the **`Suggested date`** column in
+Airtable — a fortnightly Sunday derived from each season's 1/3rd date:
+
+```
+Sunday         = the next Sunday strictly after the 1/3rd date
+Suggested date = that Sunday, pushed on a week if it falls in an even week number
+```
+
+Posts therefore only ever land on odd-week Sundays. Airtable owns this formula;
+`suggestedPostDate` in `lib/dates.ts` reproduces it exactly, and
+`lib/dates.test.ts` pins the two together against real rows read out of the
+table. It is never written back — it is a computed column, and the API rejects
+writes to those.
+
+When a slot holds fewer than **4** shows, `lib/fill.ts` tops it up from the fill
+services, highest rating first, taking only the shortfall. Note this is a
+ceiling on *topping up*, not a cap on the slot — a slot legitimately holding six
+core shows keeps all six and simply imports nothing. The rules:
+
+| Rule | Why |
+| ---- | --- |
+| Core and favourited shows are never dropped | The curated allowlist is the editorial position, and a favourite is that position stated by hand; a slot holding six of them keeps all six. |
+| Favourites count toward the target | A favourite is a show for the post like any other, so a slot with two core shows and a favourite needs one import, not two. |
+| Only the next **3** slots are filled | A distant slot is still accumulating core shows that have not been announced yet. Filling it now would import a Netflix row to solve a shortage that would have resolved itself. |
+| Unrated sorts last, not out | Unrated is almost always "has not aired". Those shows still beat leaving a post short. |
+| A fill show with no 1/3rd date is dropped | With no date it belongs to no slot, so it cannot be answering a shortage in one. |
+| Ties break on TMDB id | So the selection is stable across runs rather than depending on the order TMDB happened to return results in. |
+
+The fill decision is always computed over the **whole feed span**, even when
+rendering the 28-day page. Whether a show earns its place depends on how many
+shows share its slot, and that can only be counted over the full span —
+resolving the page over its own shorter range would reach a different decision
+and show a row the `.ics` feed and Airtable disagreed about.
+
+A **discovered** show must clear all of these to appear (all configurable in
+`lib/config.ts`). A **favourited** show bypasses every one of them:
 
 | Rule | Why |
 | ---- | --- |
@@ -72,7 +180,11 @@ lib/
   config.ts               Network allowlist, excluded genres/keywords, constants
   dates.ts                Rolling window + London/DST + ICS time helpers
   grouping.ts             Per-show-per-day card capping
-  tmdb.ts                 TMDB fetching, filtering, Episode[] assembly
+  tmdb-client.ts          TMDB wire layer: auth, fetch, concurrency, response shapes
+  favourites.ts           The owner's TMDB favourites + which season is airing
+  tmdb.ts                 Filtering, Episode[]/ShowSeason[] assembly, orchestration
+  rating.ts               Vote-weighted TMDB + IMDb (via OMDb) blended score
+  fill.ts                 Tops thin blog post slots up from the fill tier
   ical.ts                 RFC 5545 feed builder
   airtable.ts             Upserts the season feed into an Airtable table
   types.ts                Shared domain types
@@ -80,6 +192,10 @@ lib/
 
 The windowing and timezone logic live entirely in `lib/dates.ts`, so the page
 and the `.ics` endpoint share identical semantics with no duplication.
+
+`lib/tmdb-client.ts` is a leaf: it imports nothing else from `lib/`. That is
+what keeps the graph acyclic, since `lib/favourites.ts` needs the fetch helper
+and the show shape while `lib/tmdb.ts` needs the favourites.
 
 ## Local setup
 
@@ -98,8 +214,9 @@ Set **either** credential (the v4 read token is preferred when both are set):
 | Variable                  | Required            | Notes                                            |
 | ------------------------- | ------------------- | ------------------------------------------------ |
 | `TMDB_API_KEY`            | one of these two    | TMDB **v3** API key.                             |
-| `TMDB_READ_ACCESS_TOKEN`  | one of these two    | TMDB **v4** read access token (Bearer JWT).      |
+| `TMDB_READ_ACCESS_TOKEN`  | one of these two    | TMDB **v4** read access token (Bearer JWT). Also unlocks [favourited shows](#favourited-shows), which the v3 key alone cannot reach. |
 | `NEXT_PUBLIC_SITE_URL`    | no                  | Only for custom domains; the copy button reads the live origin at runtime, so this is normally unnecessary. |
+| `OMDB_API_KEY`            | no                  | IMDb half of the blended rating. Unset → TMDB-only scores. Free key, 1,000 req/day. |
 | `AIRTABLE_TOKEN`          | no                  | Enables the Airtable sync. PAT with `data.records:write`.        |
 | `AIRTABLE_BASE_ID`        | no                  | `app…` id of the destination base.                               |
 | `AIRTABLE_TABLE_ID`       | no                  | `tbl…` id of the destination table.                              |
@@ -121,9 +238,12 @@ at the true air moment in the subscriber's local zone.
 
 ## Show feed (JSON)
 
-`GET /api/shows` returns one record per show — the season-level view, for
+`GET /api/shows` returns one record per **season** — the season-level view, for
 piping into a spreadsheet or database rather than a calendar client. It covers
-the same 60-day forward span as the `.ics` feed.
+the same 60-day forward span as the `.ics` feed. A show is almost always one
+record, but a favourited show whose season finale and next premiere both fall in
+the span legitimately produces two, distinguished by `seasonNumber` — the same
+pair Airtable upserts on.
 
 ```json
 [
@@ -206,11 +326,14 @@ holds exactly that pair joined together: Airtable rejects computed fields in
 | Finish Date     | `seasonFinishDate`      |
 | 1/3rd Date      | `firstThirdAirDate`     |
 | Network         | `network`               |
+| Rating          | `rating.combined`       |
 
 The date columns must be Airtable **Date** fields; values arrive as ISO
 `YYYY-MM-DD` strings and Airtable parses them directly. `Feed Key` and
-`1/3rd Episode` are formulas and are never written to — the API rejects writes
-to computed fields, which would fail the whole batch.
+`1/3rd Episode` and `Suggested date` are formulas and are never written to —
+the API rejects writes to computed fields, which would fail the whole batch.
+`Suggested date` in particular is *read* (recomputed identically in
+`lib/dates.ts`) so shows can be grouped into slots, but never written back.
 
 `Network` is a **single select**, and `typecast` is deliberately off so the
 sync cannot invent options in a list that is curated by hand. A network with no
@@ -221,10 +344,20 @@ row lands and a human relabels it, rather than the batch being rejected with
 
 The options are mirrored in `NETWORK_OPTIONS` in `lib/airtable.ts`, because the
 sync has to know a value is writable *before* sending it. A test asserts every
-service in `ALLOWED_SERVICES` has an option there, so adding a network to
-`lib/config.ts` without adding the Airtable option fails CI rather than quietly
-producing a run of `UNKNOWN` rows. `UNKNOWN` remains the runtime net for what
-code cannot see — an option deleted in the Airtable UI.
+service in `ALLOWED_SERVICES` and `FILL_SERVICES` is accounted for in either
+`NETWORK_OPTIONS` or `PENDING_NETWORK_OPTIONS`, so adding a network to
+`lib/config.ts` without deciding which list it belongs in fails CI rather than
+quietly producing a run of `UNKNOWN` rows. `UNKNOWN` remains the runtime net for
+what code cannot see — an option deleted in the Airtable UI.
+
+**Pending options.** Airtable's API cannot add a choice to a single-select —
+only the UI can — so a service whose option does not exist yet is listed in
+`PENDING_NETWORK_OPTIONS` rather than `NETWORK_OPTIONS`. That is the safe order
+of operations: `NETWORK_OPTIONS` is a claim about what Airtable will accept, and
+claiming an option that does not exist fails the whole ten-record batch rather
+than the one row. Pending services sync as `UNKNOWN` until the option is added
+by hand, then move across. Nothing is pending right now — every service the
+calendar can emit is writable.
 
 `GET /api/refresh` reports what happened:
 
@@ -331,7 +464,10 @@ then redeploy, or the endpoint will keep answering unauthenticated requests.
   share one id, and "FX on Hulu" content is tagged under FX/Hulu upstream.
 - Discovery sweeps the three most-popular Discover pages and looks back 21 days
   before the displayed range so mid-run Season 1 shows are still caught. Adjust
-  the constants at the top of `lib/tmdb.ts` to widen coverage.
+  the constants at the top of `lib/tmdb.ts` to widen coverage. Favourites are a
+  separate source, not a Discover sweep — Discover would never surface most of
+  them, since they are typically past their first season or on an unlisted
+  network.
 - TMDB imposes no horizon on how far ahead it can be queried — Discover accepts
   any `first_air_date` range and season payloads carry future `air_date`s — so
   navigating months ahead returns real data, thinning out naturally as fewer

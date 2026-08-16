@@ -10,6 +10,9 @@ import {
   formatLondonTime,
   formatColumnHeader,
   formatIcsUtc,
+  airtableWeekNum,
+  suggestedPostDate,
+  nextPostSlots,
 } from "./dates";
 
 /** getUTCDay for a `YYYY-MM-DD` key, read at noon UTC to avoid any rollover. */
@@ -20,20 +23,35 @@ function weekdayOf(dayKey: string): number {
 
 describe("getRollingWindow — 28-day period, 14 visible, week-stepped", () => {
   // Sample instants across the year, including both DST-transition days and a
-  // late-Sunday-UTC instant that is already Monday in London.
+  // late-Sunday-UTC instant that is already Monday in London. The expected key
+  // is the Monday of LAST week — PERIOD_LOOKBACK_WEEKS back — so recently-aired
+  // (and therefore rated) shows fall inside the period.
   const cases: Array<[label: string, iso: string, expectedMonday: string]> = [
-    ["summer / BST (a Friday)", "2026-08-14T10:00:00Z", "2026-08-10"],
-    ["winter / GMT (a Thursday)", "2026-01-15T10:00:00Z", "2026-01-12"],
-    ["spring-forward day (BST begins)", "2026-03-29T12:00:00Z", "2026-03-23"],
-    ["fall-back day (GMT begins)", "2026-10-25T12:00:00Z", "2026-10-19"],
+    ["summer / BST (a Friday)", "2026-08-14T10:00:00Z", "2026-08-03"],
+    ["winter / GMT (a Thursday)", "2026-01-15T10:00:00Z", "2026-01-05"],
+    ["spring-forward day (BST begins)", "2026-03-29T12:00:00Z", "2026-03-16"],
+    ["fall-back day (GMT begins)", "2026-10-25T12:00:00Z", "2026-10-12"],
   ];
 
-  it.each(cases)("starts on the Monday of the current week: %s", (_l, iso, monday) => {
-    const w = getRollingWindow(0, new Date(iso));
-    expect(w.periodStartKey).toBe(monday);
-    expect(weekdayOf(w.periodStartKey)).toBe(1); // Monday
-    expect(w.periodDayKeys).toHaveLength(28);
-    expect(weekdayOf(w.periodEndKey)).toBe(0); // Sunday
+  it.each(cases)(
+    "starts a week before the Monday of the current week: %s",
+    (_l, iso, monday) => {
+      const w = getRollingWindow(0, new Date(iso));
+      expect(w.periodStartKey).toBe(monday);
+      expect(weekdayOf(w.periodStartKey)).toBe(1); // Monday
+      expect(w.periodDayKeys).toHaveLength(28);
+      expect(weekdayOf(w.periodEndKey)).toBe(0); // Sunday
+    }
+  );
+
+  it("puts today inside the period, with a full week of hindsight before it", () => {
+    // The lookback is what makes ratings usable: a show that premiered last week
+    // has votes, and it must be on the calendar for those votes to matter.
+    const now = new Date("2026-08-14T10:00:00Z"); // Friday
+    const w = getRollingWindow(0, now);
+    expect(w.periodDayKeys).toContain("2026-08-14");
+    expect(w.periodDayKeys.indexOf("2026-08-14")).toBe(11); // 7 back + Mon→Fri
+    expect(w.periodStartKey < londonTodayKey(now)).toBe(true);
   });
 
   it("shows exactly 14 days, starting Monday and ending Sunday", () => {
@@ -47,9 +65,9 @@ describe("getRollingWindow — 28-day period, 14 visible, week-stepped", () => {
 
   it("steps the visible slice by exactly one week per offset", () => {
     const now = new Date("2026-08-14T10:00:00Z"); // week of Mon 2026-08-10
-    expect(getRollingWindow(0, now).visibleDayKeys[0]).toBe("2026-08-10");
-    expect(getRollingWindow(1, now).visibleDayKeys[0]).toBe("2026-08-17");
-    expect(getRollingWindow(2, now).visibleDayKeys[0]).toBe("2026-08-24");
+    expect(getRollingWindow(0, now).visibleDayKeys[0]).toBe("2026-08-03");
+    expect(getRollingWindow(1, now).visibleDayKeys[0]).toBe("2026-08-10");
+    expect(getRollingWindow(2, now).visibleDayKeys[0]).toBe("2026-08-17");
   });
 
   it("keeps the visible slice inside the 28-day period at every offset", () => {
@@ -75,9 +93,10 @@ describe("getRollingWindow — 28-day period, 14 visible, week-stepped", () => {
   });
 
   it("uses the LONDON civil date: a late-Sunday-UTC instant already Monday in London rolls forward", () => {
-    // 2026-08-16 23:59Z is Mon 2026-08-17 00:59 BST → period starts that Monday.
+    // 2026-08-16 23:59Z is Mon 2026-08-17 00:59 BST, so "this week" is the week
+    // of the 17th and the period starts a week before it, not two.
     const w = getRollingWindow(0, new Date("2026-08-16T23:59:00Z"));
-    expect(w.periodStartKey).toBe("2026-08-17");
+    expect(w.periodStartKey).toBe("2026-08-10");
   });
 
   it("reports arrow availability at the ends of the period", () => {
@@ -110,13 +129,17 @@ describe("getRollingWindow — 28-day period, 14 visible, week-stepped", () => {
 
   it("labels the visible range, collapsing a shared month or year", () => {
     const now = new Date("2026-08-14T10:00:00Z");
-    // Mon 10 Aug – Sun 23 Aug: same month and year.
-    expect(getRollingWindow(0, now).rangeLabel).toBe("10 – 23 Aug 2026");
-    // Mon 24 Aug – Sun 6 Sep: crosses a month boundary. en-GB abbreviates
-    // September as "Sept" (4 letters) — that is correct ICU output, not a typo.
-    expect(getRollingWindow(2, now).rangeLabel).toBe("24 Aug – 6 Sept 2026");
+    // Mon 3 Aug – Sun 16 Aug: same month and year.
+    expect(getRollingWindow(0, now).rangeLabel).toBe("3 – 16 Aug 2026");
+    // Mon 17 Aug – Sun 30 Aug: still the same month.
+    expect(getRollingWindow(2, now).rangeLabel).toBe("17 – 30 Aug 2026");
+    // Crossing a month boundary keeps both. en-GB abbreviates September as
+    // "Sept" (4 letters) — that is correct ICU output, not a typo.
+    expect(getRollingWindow(2, new Date("2026-08-28T10:00:00Z")).rangeLabel).toBe(
+      "31 Aug – 13 Sept 2026"
+    );
     // Crossing a year boundary keeps both years.
-    expect(getRollingWindow(2, new Date("2026-12-14T10:00:00Z")).rangeLabel).toBe(
+    expect(getRollingWindow(2, new Date("2026-12-21T10:00:00Z")).rangeLabel).toBe(
       "28 Dec 2026 – 10 Jan 2027"
     );
   });
@@ -218,5 +241,91 @@ describe("format helpers", () => {
 
   it("formatIcsUtc emits YYYYMMDDTHHMMSSZ", () => {
     expect(formatIcsUtc(Date.UTC(2026, 7, 14, 19, 0, 0))).toBe("20260814T190000Z");
+  });
+});
+
+describe("suggestedPostDate", () => {
+  /**
+   * Every pair here was read out of the live Airtable table (1/3rd Date ->
+   * Suggested date). Airtable owns the formula; these are the regression net
+   * that proves this module still agrees with it.
+   */
+  const airtableRows: [string, string][] = [
+    ["2026-10-15", "2026-10-18"], // War
+    ["2026-10-07", "2026-10-18"], // Carrie — Sunday 10-11 is even, pushed on
+    ["2026-09-29", "2026-10-04"], // Brothers
+    ["2026-09-27", "2026-10-04"], // American Hostage — 1/3rd IS a Sunday
+    ["2026-09-22", "2026-10-04"], // The Drop
+    ["2026-09-16", "2026-09-20"], // Neagley
+    ["2026-09-09", "2026-09-20"], // Last Seen
+    ["2026-09-08", "2026-09-20"], // The Varnell Hill Show
+    ["2026-08-30", "2026-09-06"], // Lanterns — 1/3rd IS a Sunday
+    ["2026-08-14", "2026-08-23"], // Fightland
+    ["2026-08-12", "2026-08-23"], // The Shards
+    ["2026-07-27", "2026-08-09"], // Furious
+    ["2025-02-01", "2025-02-09"], // We Were Liars
+    ["2025-01-29", "2025-02-09"], // Prime Target
+    ["2024-12-24", "2024-12-29"], // Secret Level
+    ["2024-12-19", "2024-12-29"], // Creature Commandos
+  ];
+
+  it.each(airtableRows)("maps 1/3rd date %s to slot %s", (third, slot) => {
+    expect(suggestedPostDate(third)).toBe(slot);
+  });
+
+  it("always lands on a Sunday in an odd week", () => {
+    for (const [third] of airtableRows) {
+      const slot = suggestedPostDate(third)!;
+      expect(weekdayOf(slot)).toBe(0);
+      expect(airtableWeekNum(slot) % 2).toBe(1);
+    }
+  });
+
+  it("jumps a whole week when the 1/3rd date is itself a Sunday", () => {
+    // 2026-08-30 is a Sunday; `7 - 0 = 7` skips to 09-06 rather than staying put.
+    expect(weekdayOf("2026-08-30")).toBe(0);
+    expect(suggestedPostDate("2026-08-30")).toBe("2026-09-06");
+  });
+
+  it("returns null for a season with no 1/3rd date yet", () => {
+    expect(suggestedPostDate(null)).toBeNull();
+  });
+});
+
+describe("airtableWeekNum", () => {
+  it("uses Sunday-start weeks with week 1 containing 1 January", () => {
+    // 2026-01-01 is a Thursday, so week 1 runs from Sunday 2025-12-28.
+    expect(airtableWeekNum("2026-01-01")).toBe(1);
+    expect(airtableWeekNum("2026-01-03")).toBe(1); // Saturday, still week 1
+    expect(airtableWeekNum("2026-01-04")).toBe(2); // Sunday, week 2 begins
+  });
+
+  it("differs from ISO 8601, which is why it is spelled out here", () => {
+    // ISO puts 2026-01-01 (Thursday) in week 1 too, but 2027-01-01 (Friday)
+    // in ISO week 53 of 2026 — Airtable calls it week 1.
+    expect(airtableWeekNum("2027-01-01")).toBe(1);
+  });
+});
+
+describe("nextPostSlots", () => {
+  it("returns upcoming odd-week Sundays, earliest first", () => {
+    // Sunday 2026-08-16 is an even week, so the next slot is 08-23.
+    const slots = nextPostSlots(3, new Date("2026-08-16T12:00:00Z"));
+    expect(slots).toEqual(["2026-08-23", "2026-09-06", "2026-09-20"]);
+  });
+
+  it("includes today when today is itself a slot", () => {
+    const slots = nextPostSlots(2, new Date("2026-08-23T12:00:00Z"));
+    expect(slots).toEqual(["2026-08-23", "2026-09-06"]);
+  });
+
+  it("steps correctly across the new-year parity reset", () => {
+    const slots = nextPostSlots(4, new Date("2026-12-14T12:00:00Z"));
+    for (const slot of slots) {
+      expect(weekdayOf(slot)).toBe(0);
+      expect(airtableWeekNum(slot) % 2).toBe(1);
+    }
+    // Sorted, and never a gap other than 1, 2 or 3 weeks.
+    expect([...slots].sort()).toEqual(slots);
   });
 });

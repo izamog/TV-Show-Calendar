@@ -6,10 +6,11 @@ import {
   seasonAirDateRange,
   firstThirdMarker,
   qualifyingService,
+  favouriteService,
+  episodeCode,
   episodesInRange,
-  type TmdbShowDetails,
-  type TmdbSeasonDetails,
 } from "./tmdb";
+import type { TmdbShowDetails, TmdbSeasonDetails } from "./tmdb-client";
 
 function makeShow(overrides: Partial<TmdbShowDetails> = {}): TmdbShowDetails {
   return {
@@ -255,7 +256,20 @@ describe("qualifyingService — the filters Discover is loose about, re-checked"
     expect(qualifyingService(makeShow())).toEqual({
       name: "FX",
       kind: "broadcast",
+      tier: "core",
     });
+  });
+
+  /**
+   * Netflix qualifies now, but as a fill-tier service — it is discovered on
+   * every run and then has to earn its place in lib/fill.ts against a thin
+   * blog post slot. The tier is the whole difference, so it is asserted here
+   * rather than left implicit.
+   */
+  it("returns fill tier for a second-tier service", () => {
+    expect(
+      qualifyingService(makeShow({ networks: [{ id: 213, name: "Netflix" }] }))
+    ).toEqual({ name: "Netflix", kind: "streaming", tier: "fill" });
   });
 
   it("rejects a non-English show even when Discover returned it", () => {
@@ -277,16 +291,45 @@ describe("qualifyingService — the filters Discover is loose about, re-checked"
     expect(qualifyingService(withKeyword)).toBeNull();
   });
 
-  it("rejects a show whose networks are all off the allowlist", () => {
-    // 213 is Netflix, excluded deliberately.
+  it("rejects a show whose networks are on neither tier", () => {
+    // 16 is CBS — mainstream, but not a service this calendar covers.
     expect(
-      qualifyingService(makeShow({ networks: [{ id: 213, name: "Netflix" }] }))
+      qualifyingService(makeShow({ networks: [{ id: 16, name: "CBS" }] }))
     ).toBeNull();
+  });
+
+  /**
+   * One brand, several TMDB networks. A BBC drama moves between BBC One and
+   * BBC Two and premieres on iPlayer as BBC Three, but the badge and the
+   * Airtable option are per *brand* — so every one of those ids must resolve to
+   * the same display name or the same show would label itself differently
+   * depending on which channel TMDB listed first.
+   */
+  it.each([
+    [4, "BBC"],
+    [332, "BBC"],
+    [3, "BBC"],
+    [100, "BBC"],
+    [9, "ITV"],
+    [149, "ITV"],
+    [5871, "ITV"],
+    [26, "Channel 4"],
+    [136, "Channel 4"],
+    [99, "Channel 5"],
+    [1063, "Sky"],
+    [5237, "Sky"],
+    [5213, "Sky"],
+    [214, "Sky"],
+  ])("resolves UK network %i to the brand %s", (id, brand) => {
+    expect(
+      qualifyingService(makeShow({ networks: [{ id, name: "whatever" }] }))
+    ).toMatchObject({ name: brand, tier: "core" });
   });
 });
 
 describe("episodesInRange — season to in-range Episode rows", () => {
-  const service = { name: "FX", kind: "broadcast" as const };
+  const service = { name: "FX", kind: "broadcast" as const, tier: "core" as const };
+  const rating = { combined: 8.1, tmdb: 8.1, imdb: null, voteCount: 300 };
   const rangeDays = new Set(["2026-08-10", "2026-08-11", "2026-08-12"]);
 
   function makeSeason(
@@ -296,13 +339,15 @@ describe("episodesInRange — season to in-range Episode rows", () => {
     return { episodes, poster_path: poster };
   }
 
-  function build(season: TmdbSeasonDetails) {
+  function build(season: TmdbSeasonDetails, seasonNumber = 1) {
     return episodesInRange({
       showId: 42,
       showName: "Test Show",
       showOverview: "A show.",
+      seasonNumber,
       season,
       service,
+      rating,
       rangeDays,
     });
   }
@@ -340,6 +385,24 @@ describe("episodesInRange — season to in-range Episode rows", () => {
       ["S01E02", false],
     ]);
     expect(out[0].id).toBe("42-S01E01");
+  });
+
+  /**
+   * A favourited show contributes whichever season is airing, so the code and
+   * the id must carry the real season number. Getting this wrong would collide
+   * two seasons of the same show onto one React key and one Airtable row.
+   */
+  it("carries a non-first season number through the code, id and rows", () => {
+    const out = build(
+      makeSeason([{ episode_number: 3, name: "Third", air_date: "2026-08-11" }]),
+      4
+    );
+    expect(out[0].code).toBe("S04E03");
+    expect(out[0].id).toBe("42-S04E03");
+    expect(out[0].seasonNumber).toBe(4);
+    // Episode 1 of season 4 is a season premiere, and the flag still marks it —
+    // the UI, not this layer, decides what to call it.
+    expect(out[0].isPremiere).toBe(false);
   });
 
   it("counts the whole season, not just the in-range slice", () => {
@@ -380,5 +443,107 @@ describe("episodesInRange — season to in-range Episode rows", () => {
 
   it("returns nothing for a season with no episodes", () => {
     expect(build(makeSeason([]))).toEqual([]);
+  });
+});
+
+describe("pickPrimaryService — tier precedence across a show's networks", () => {
+  /**
+   * International distribution routinely tags a US cable/streaming series with
+   * Netflix outside its home market. Tiering such a show by whichever network
+   * TMDB happened to list first would make a core-allowlist show droppable by
+   * the fill logic.
+   */
+  it("prefers the core service when a show carries both tiers", () => {
+    const netflixFirst = qualifyingService(
+      makeShow({
+        networks: [
+          { id: 213, name: "Netflix" },
+          { id: 88, name: "FX" },
+        ],
+      })
+    );
+    expect(netflixFirst).toEqual({ name: "FX", kind: "broadcast", tier: "core" });
+  });
+
+  it("still resolves fill tier when no core network is present", () => {
+    expect(
+      qualifyingService(
+        makeShow({
+          networks: [
+            { id: 16, name: "CBS" },
+            { id: 1255, name: "Stan" },
+          ],
+        })
+      )
+    ).toEqual({ name: "Stan", kind: "streaming", tier: "fill" });
+  });
+
+  it("keeps TMDB's order within a tier, so the badge is stable", () => {
+    expect(
+      qualifyingService(
+        makeShow({
+          networks: [
+            { id: 1255, name: "Stan" },
+            { id: 213, name: "Netflix" },
+          ],
+        })
+      )
+    ).toEqual({ name: "Stan", kind: "streaming", tier: "fill" });
+  });
+});
+
+describe("favouriteService — a favourite is never dropped for its network", () => {
+  /**
+   * The headline behaviour: Bridgerton is Netflix, which is fill tier and
+   * therefore droppable. Favouriting it must override that, or the whole point
+   * of the feature — "keep me up to date on shows I already like" — fails
+   * silently on exactly the shows most likely to be favourited.
+   */
+  it("stamps the favourite tier over a fill-tier network", () => {
+    expect(
+      favouriteService(makeShow({ networks: [{ id: 213, name: "Netflix" }] }))
+    ).toEqual({ name: "Netflix", kind: "streaming", tier: "favourite" });
+  });
+
+  it("stamps the favourite tier over a core-tier network too", () => {
+    // Undroppable either way, but the tier must say WHY it was kept.
+    expect(
+      favouriteService(makeShow({ networks: [{ id: 88, name: "FX" }] }))
+    ).toEqual({ name: "FX", kind: "broadcast", tier: "favourite" });
+  });
+
+  /**
+   * A network on neither list still yields a service rather than null. This is
+   * the case the allowlist cannot anticipate — a favourite on a service nobody
+   * has added — and dropping it would be the allowlist quietly overruling a
+   * choice made by hand.
+   */
+  it("falls back to TMDB's own network name for an unlisted service", () => {
+    expect(
+      favouriteService(makeShow({ networks: [{ id: 99999, name: "Nebula TV" }] }))
+    ).toEqual({ name: "Nebula TV", kind: "streaming", tier: "favourite" });
+  });
+
+  it("survives a show with no networks at all", () => {
+    expect(favouriteService(makeShow({ networks: [] }))).toEqual({
+      name: "Unknown",
+      kind: "streaming",
+      tier: "favourite",
+    });
+    expect(favouriteService(makeShow({ networks: undefined }))).toMatchObject({
+      name: "Unknown",
+    });
+  });
+});
+
+describe("episodeCode — zero-padded, widening rather than truncating", () => {
+  it("pads both halves to two digits", () => {
+    expect(episodeCode(1, 1)).toBe("S01E01");
+    expect(episodeCode(4, 12)).toBe("S04E12");
+  });
+
+  it("widens past 99 rather than losing a digit", () => {
+    expect(episodeCode(1, 100)).toBe("S01E100");
+    expect(episodeCode(12, 7)).toBe("S12E07");
   });
 });

@@ -47,9 +47,13 @@ function CardArtwork({
       {/* Bottom gradient so overlaid chips stay legible over any artwork. */}
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/85 via-black/5 to-black/25" />
 
+      {/* "Series premiere" only when it really is one. A favourited show
+          contributes whichever season is currently airing, so episode 1 of its
+          fourth season is a season premiere and saying otherwise would be a
+          plain factual error on the card. */}
       {episode.isPremiere && (
         <span className="absolute left-1.5 top-1.5 rounded bg-amber-400 px-1.5 py-0.5 text-xs font-bold uppercase tracking-wide text-neutral-950">
-          Series Premiere
+          {episode.seasonNumber === 1 ? "Series Premiere" : "Season Premiere"}
         </span>
       )}
 
@@ -79,7 +83,31 @@ function CardArtwork({
   );
 }
 
-/** Season 1 progress: this episode's position within the full season. */
+/**
+ * The blended TMDB + IMDb score, or nothing at all.
+ *
+ * Rendered only when a rating exists: most shows here have not premiered, and
+ * an explicit "Unrated" chip on the majority of cards would read as a verdict
+ * on the show rather than an absence of votes. The number carries a spoken
+ * label because "8.4" beside a star is unambiguous visually and meaningless
+ * read aloud in isolation.
+ *
+ * amber-300 on neutral-800 measures ~10:1, comfortably past the 4.5:1 AA floor.
+ */
+function RatingBadge({ rating }: { rating: Episode["rating"] }) {
+  if (rating.combined === null) return null;
+
+  return (
+    <span className="inline-flex items-center gap-1 rounded bg-neutral-800 px-1.5 py-0.5 text-xs font-semibold text-amber-300">
+      <span aria-hidden="true">★</span>
+      <span className="sr-only">Rated </span>
+      {rating.combined.toFixed(1)}
+      <span className="sr-only"> out of 10</span>
+    </span>
+  );
+}
+
+/** Season progress: this episode's position within the full season. */
 function SeasonProgress({
   episode,
   accent,
@@ -136,6 +164,28 @@ function SynopsisOverlay({
       <h4 className="text-sm font-semibold leading-snug text-neutral-50">
         {episode.showName}
       </h4>
+
+      {/* The component scores, so the blended number can be read in context —
+          a 9.0 from a handful of votes is a different claim to a 9.0 from
+          forty thousand, and the overlay is where there is room to say so. */}
+      {episode.rating.combined !== null && (
+        <p className="text-xs text-neutral-300">
+          <span className="font-semibold text-amber-300">
+            {episode.rating.combined.toFixed(1)}
+          </span>
+          <span> / 10 </span>
+          <span className="text-neutral-400">
+            (
+            {[
+              episode.rating.tmdb !== null && `TMDB ${episode.rating.tmdb.toFixed(1)}`,
+              episode.rating.imdb !== null && `IMDb ${episode.rating.imdb.toFixed(1)}`,
+            ]
+              .filter(Boolean)
+              .join(", ")}
+            )
+          </span>
+        </p>
+      )}
 
       {showSynopsis && (
         <div>
@@ -219,9 +269,12 @@ export default function EpisodeCard({ episode }: { episode: Episode }) {
       <CardArtwork episode={episode} accent={accent} />
 
       <div className="space-y-1.5 p-2.5">
-        <span className="inline-block rounded bg-neutral-800 px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide text-neutral-200">
-          {episode.serviceName}
-        </span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="inline-block rounded bg-neutral-800 px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide text-neutral-200">
+            {episode.serviceName}
+          </span>
+          <RatingBadge rating={episode.rating} />
+        </div>
         <h3 className="text-base font-semibold leading-snug text-neutral-50">
           {episode.showName}
         </h3>

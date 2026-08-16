@@ -2,12 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   FIELD,
   NETWORK_OPTIONS,
+  PENDING_NETWORK_OPTIONS,
   toAirtableFields,
   toAirtableNetwork,
   syncShowSeasons,
   readAirtableConfig,
 } from "./airtable";
-import { ALLOWED_SERVICES } from "./config";
+import { ALLOWED_SERVICES, FILL_SERVICES } from "./config";
 import type { ShowSeason } from "./types";
 
 function makeSeason(overrides: Partial<ShowSeason> = {}): ShowSeason {
@@ -22,6 +23,9 @@ function makeSeason(overrides: Partial<ShowSeason> = {}): ShowSeason {
     firstThirdEpisodeNumber: 3,
     firstThirdAirDate: "2026-08-30",
     network: "HBO",
+    serviceTier: "core",
+    rating: { combined: 8.2, tmdb: 7.9, imdb: 8.3, voteCount: 12_400 },
+    suggestedPostDate: "2026-09-06",
     ...overrides,
   };
 }
@@ -37,7 +41,27 @@ describe("toAirtableFields", () => {
       [FIELD.finishDate]: "2026-10-04",
       [FIELD.firstThirdDate]: "2026-08-30",
       [FIELD.network]: "HBO",
+      [FIELD.rating]: 8.2,
     });
+  });
+
+  /**
+   * `Suggested date` is an Airtable formula over `1/3rd Date`, and the calendar
+   * computes the identical value in `suggestedPostDate` to group shows into
+   * slots. It must never be written back — the API rejects computed fields and
+   * fails the whole batch.
+   */
+  it("never writes the slot it grouped on", () => {
+    const fields = toAirtableFields(makeSeason());
+    expect(Object.values(fields)).not.toContain("2026-09-06");
+    expect(Object.keys(fields)).not.toContain("fldfyLCIXUAzC81jW"); // Suggested date
+  });
+
+  it("clears the rating cell for an unrated show rather than leaving a stale one", () => {
+    const fields = toAirtableFields(
+      makeSeason({ rating: { combined: null, tmdb: null, imdb: null, voteCount: 0 } })
+    );
+    expect(fields[FIELD.rating]).toBeNull();
   });
 
   /**
@@ -49,7 +73,8 @@ describe("toAirtableFields", () => {
     const keys = Object.keys(toAirtableFields(makeSeason()));
     expect(keys).not.toContain("fldZqKw4zHS607zri"); // Feed Key
     expect(keys).not.toContain("fldAApydDeL0Ki8F4"); // 1/3rd Episode
-    expect(keys).toHaveLength(8);
+    expect(keys).not.toContain("fldfyLCIXUAzC81jW"); // Suggested date
+    expect(keys).toHaveLength(9);
   });
 
   it("folds an unwritable network to UNKNOWN so the row still lands", () => {
@@ -76,7 +101,7 @@ describe("toAirtableNetwork", () => {
     }
   });
 
-  it.each(["BBC Three", "Showtime", "", "hbo"])(
+  it.each(["BBC One", "Showtime", "", "hbo"])(
     "folds %o to UNKNOWN",
     (network) => {
       expect(toAirtableNetwork(network)).toBe("UNKNOWN");
@@ -85,17 +110,42 @@ describe("toAirtableNetwork", () => {
 
   /**
    * The real reason UNKNOWN exists is drift: the allowlist lives in config.ts
-   * and the select options live in Airtable, and nothing links them. This
-   * asserts they currently agree, so a service added to config.ts without a
-   * matching Airtable option is caught in CI rather than showing up as a run of
-   * UNKNOWN rows weeks later. UNKNOWN stays as the runtime net for the case
-   * code cannot see: an option deleted in the Airtable UI.
+   * and the select options live in Airtable, and nothing links them. This pins
+   * the two sets against each other, so a service added to config.ts is caught
+   * in CI rather than showing up as a run of UNKNOWN rows weeks later, and so
+   * the pending list cannot rot once the options are added by hand.
+   *
+   * Note this covers BOTH tiers. `PENDING_NETWORK_OPTIONS` started as a
+   * fill-tier concession, but Airtable's API cannot create select choices for
+   * any tier (only the UI can), so a newly added *core* network is just as
+   * likely to be waiting on a human. Which list a service belongs in is a
+   * deliberate choice either way; being in neither is the bug.
    */
-  it("has an option for every service the calendar can emit", () => {
-    const missing = ALLOWED_SERVICES.map((s) => s.displayName).filter(
-      (n) => !NETWORK_OPTIONS.has(n)
+  it("accounts for every service as either writable or pending", () => {
+    const unaccounted = [...ALLOWED_SERVICES, ...FILL_SERVICES]
+      .map((s) => s.displayName)
+      .filter((n) => !NETWORK_OPTIONS.has(n) && !PENDING_NETWORK_OPTIONS.has(n));
+    expect(unaccounted).toEqual([]);
+  });
+
+  it("never lists a service as both writable and pending", () => {
+    const both = [...PENDING_NETWORK_OPTIONS].filter((n) =>
+      NETWORK_OPTIONS.has(n)
     );
-    expect(missing).toEqual([]);
+    expect(both).toEqual([]);
+  });
+
+  /**
+   * The pending list is empty today, so iterating it would pass vacuously. What
+   * still needs pinning is the mechanism it relies on: anything not in
+   * `NETWORK_OPTIONS` folds to UNKNOWN instead of reaching Airtable and taking
+   * the whole ten-record batch down with it.
+   */
+  it("folds a pending service to UNKNOWN rather than failing the batch", () => {
+    for (const pending of [...PENDING_NETWORK_OPTIONS, "Some Future Network"]) {
+      expect(NETWORK_OPTIONS.has(pending)).toBe(false);
+      expect(toAirtableNetwork(pending)).toBe("UNKNOWN");
+    }
   });
 });
 

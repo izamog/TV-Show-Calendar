@@ -65,7 +65,7 @@ export function buildCalendar(episodes: Episode[], dtstampMs: number = Date.now(
     const start = ep.airInstantUtcMs;
     const end = start + EVENT_DURATION_MINUTES * 60_000;
     const summary = `${ep.showName} ${seasonEpisodeLabel(ep)}`;
-    const description = `${ep.episodeName} · ${ep.serviceName} · ${ep.seasonEpisodeCount} episodes in Season 1`;
+    const description = `${ep.episodeName} · ${ep.serviceName} · ${ep.seasonEpisodeCount} episodes in Season ${ep.seasonNumber}`;
 
     lines.push(
       "BEGIN:VEVENT",

@@ -14,7 +14,7 @@ import type { AllowedService } from "./types";
  *   - broadcast  -> 20:00 London local on the air date
  * See lib/dates.ts (resolveAirInstant) for how these defaults are applied.
  */
-export const ALLOWED_SERVICES: AllowedService[] = [
+const CORE_SERVICES: Omit<AllowedService, "tier">[] = [
   { tmdbNetworkId: 2552, displayName: "Apple TV+", kind: "streaming" },
   { tmdbNetworkId: 3353, displayName: "Peacock", kind: "streaming" },
   { tmdbNetworkId: 4330, displayName: "Paramount+", kind: "streaming" },
@@ -35,16 +35,127 @@ export const ALLOWED_SERVICES: AllowedService[] = [
   // TMDB lists Epix first, and pickPrimaryService takes the first allowed
   // network, so allowing both would badge these shows as "Epix".
   { tmdbNetworkId: 6219, displayName: "MGM+", kind: "broadcast" },
+
+  // --- UK broadcasters ---
+  //
+  // Each brand is several TMDB networks (a drama moves between BBC One and
+  // BBC Two, or premieres on iPlayer as BBC Three), but only ONE display name,
+  // because the badge and the Airtable `Network` select both want the brand a
+  // reader recognises rather than the channel it happened to land on. Sharing a
+  // display name across ids is safe: `pickPrimaryService` resolves to the
+  // service, and everything downstream keys off `displayName`.
+  //
+  // Every id was read off a known original's `networks[]` (Sherlock, Wolf Hall,
+  // Normal People, Detectorists; Broadchurch, Plebs, Litvinenko; It's a Sin,
+  // Skins; Anne Boleyn; Gangs of London, Brassic, Code 404) — TMDB has no
+  // network search endpoint and the company namespace is a different one.
+  //
+  // All are `broadcast` (20:00 London) except ITVX, which is streaming-first.
+  { tmdbNetworkId: 4, displayName: "BBC", kind: "broadcast" },
+  { tmdbNetworkId: 332, displayName: "BBC", kind: "broadcast" },
+  { tmdbNetworkId: 3, displayName: "BBC", kind: "broadcast" },
+  { tmdbNetworkId: 100, displayName: "BBC", kind: "broadcast" },
+  { tmdbNetworkId: 9, displayName: "ITV", kind: "broadcast" },
+  { tmdbNetworkId: 149, displayName: "ITV", kind: "broadcast" },
+  { tmdbNetworkId: 5871, displayName: "ITV", kind: "streaming" },
+  { tmdbNetworkId: 26, displayName: "Channel 4", kind: "broadcast" },
+  { tmdbNetworkId: 136, displayName: "Channel 4", kind: "broadcast" },
+  // TMDB names this network simply "5" — it is Channel 5 (Anne Boleyn, The
+  // Teacher). Do not "correct" the id by searching for the name "Channel 5".
+  { tmdbNetworkId: 99, displayName: "Channel 5", kind: "broadcast" },
+  { tmdbNetworkId: 1063, displayName: "Sky", kind: "broadcast" },
+  { tmdbNetworkId: 5237, displayName: "Sky", kind: "broadcast" },
+  { tmdbNetworkId: 5213, displayName: "Sky", kind: "broadcast" },
+  // Sky One closed in 2021 and its output moved to Sky Max, but TMDB still tags
+  // the back catalogue — and some in-production shows — with both ids.
+  { tmdbNetworkId: 214, displayName: "Sky", kind: "broadcast" },
 ];
 
-/** Fast lookup from TMDB network id -> allowed service. */
-export const ALLOWED_SERVICE_BY_ID: ReadonlyMap<number, AllowedService> =
-  new Map(ALLOWED_SERVICES.map((s) => [s.tmdbNetworkId, s]));
+/**
+ * The curated allowlist — every show on one of these is shown unconditionally.
+ *
+ * `tier` is stamped on here rather than repeated on all fifteen literals above,
+ * which stay readable as a plain list of "the networks we cover".
+ */
+export const ALLOWED_SERVICES: AllowedService[] = CORE_SERVICES.map((s) => ({
+  ...s,
+  tier: "core",
+}));
 
-/** Pipe-joined id list for a TMDB Discover `with_networks` OR-query. */
-export const ALLOWED_NETWORK_IDS_OR = ALLOWED_SERVICES.map(
+/**
+ * Second-tier services, discovered on every run but NOT shown by default.
+ *
+ * These are mainstream services across the US/UK/AU/CA whose whole output would
+ * swamp the calendar if allowed in wholesale — Netflix alone premieres more
+ * scripted Season 1s than the entire core allowlist combined. A show from this
+ * tier only reaches the calendar when a blog post slot is short of
+ * `TARGET_SEASONS_PER_SLOT`, and then only the best-rated ones. See lib/fill.ts.
+ *
+ * Every id was resolved from a known original on that service (Wolf Like Me and
+ * Bump for Stan, Letterkenny and The Trades for Crave) rather than guessed:
+ * TMDB has no network search endpoint, and the company namespace is separate
+ * from the network namespace — "Netflix" the company is 178464, not 213.
+ */
+export const FILL_SERVICES: AllowedService[] = [
+  { tmdbNetworkId: 213, displayName: "Netflix", kind: "streaming", tier: "fill" },
+  { tmdbNetworkId: 1255, displayName: "Stan", kind: "streaming", tier: "fill" },
+  { tmdbNetworkId: 1344, displayName: "Crave", kind: "streaming", tier: "fill" },
+];
+
+/** Core + fill, in that order — the order `pickPrimaryService` walks. */
+export const ALL_SERVICES: AllowedService[] = [
+  ...ALLOWED_SERVICES,
+  ...FILL_SERVICES,
+];
+
+/**
+ * Fast lookup from TMDB network id -> service.
+ *
+ * Covers both tiers: a show is only *discovered* if it is on one of these, and
+ * the tier it lands in decides whether it needs to earn its place later.
+ */
+export const ALLOWED_SERVICE_BY_ID: ReadonlyMap<number, AllowedService> =
+  new Map(ALL_SERVICES.map((s) => [s.tmdbNetworkId, s]));
+
+/**
+ * Pipe-joined id lists for TMDB Discover `with_networks` OR-queries, one per
+ * tier.
+ *
+ * Swept separately rather than as one combined query, and this matters: Discover
+ * is sorted by `popularity.desc` and paged, so a single query mixing both tiers
+ * would let Netflix — reliably among the most popular networks on TMDB — consume
+ * the page budget and push genuine core-allowlist shows off the end of the
+ * results entirely. The core list would then be silently thinned by the very
+ * feature meant to top it up. Separate sweeps give each tier its own budget.
+ */
+export const CORE_NETWORK_IDS_OR = ALLOWED_SERVICES.map(
   (s) => s.tmdbNetworkId
 ).join("|");
+export const FILL_NETWORK_IDS_OR = FILL_SERVICES.map(
+  (s) => s.tmdbNetworkId
+).join("|");
+
+/**
+ * How many shows should share one blog post slot (one `Suggested date`).
+ *
+ * The editorial target: a post covers four shows, so a slot holding fewer than
+ * this is short of material and is topped up from `FILL_SERVICES`.
+ *
+ * This is a *ceiling on topping up*, not a cap on the slot: core-allowlist and
+ * favourited shows are never dropped, so a slot legitimately holding five core
+ * shows keeps all five and simply imports nothing.
+ */
+export const TARGET_SEASONS_PER_SLOT = 4;
+
+/**
+ * How many upcoming slots the fill logic is allowed to touch.
+ *
+ * Deliberately near-term. A distant slot is still accumulating core-allowlist
+ * shows that simply have not been announced yet, so filling it now would import
+ * Netflix rows to solve a shortage that would have resolved itself — and those
+ * rows are hard to tell apart from ones that were genuinely needed.
+ */
+export const FILLABLE_SLOT_COUNT = 3;
 
 /**
  * TMDB genre ids to exclude so only adult-facing scripted shows remain.

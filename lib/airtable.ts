@@ -30,6 +30,7 @@ export const FIELD = {
   finishDate: "fldWB3VDy9CRy9Vay", // Finish Date
   firstThirdDate: "fldo4AvwvM9BpAEwS", // 1/3rd Date
   network: "fldGLBZLrOi8Yr9yr", // Network
+  rating: "fld3G4rEWprb1ZNkI", // Rating
 } as const;
 
 /**
@@ -53,16 +54,40 @@ export const UNKNOWN_NETWORK = "UNKNOWN";
  * reading the schema on every run would need a broader token scope for a list
  * that changes about once a year.
  *
- * Wider than `ALLOWED_SERVICES` on purpose: "Netflix", "FX on Hulu" and "FX on
- * Disney" are options the calendar never emits but the table still uses for
- * rows entered by hand.
+ * Wider than `ALL_SERVICES` on purpose: "FX on Hulu" and "FX on Disney" are
+ * options the calendar never emits but the table still uses for rows entered
+ * by hand.
  */
 export const NETWORK_OPTIONS: ReadonlySet<string> = new Set([
   "Netflix", "Prime Video", "Disney+", "Paramount+", "Peacock",
   "FX on Hulu", "FX on Disney", "Hulu", "AMC", "HBO",
   "Apple TV+", "Max", "MGM+", "FX", "Syfy", "Starz", "AMC+",
+  "Stan", "Crave",
+  // UK broadcasters. One option per brand, matching the display names in
+  // lib/config.ts — the table wants "BBC", not the four separate TMDB networks
+  // (BBC One/Two/Three/Four) that resolve to it.
+  "BBC", "ITV", "Channel 4", "Channel 5", "Sky",
   UNKNOWN_NETWORK,
 ]);
+
+/**
+ * Services the select has no option for YET. Empty right now — every service
+ * the calendar can emit is writable.
+ *
+ * Kept rather than deleted, because it is the safe landing place for the next
+ * network added to `lib/config.ts`. Airtable's API cannot add a choice to a
+ * single-select — only the UI can — and `NETWORK_OPTIONS` is a *claim about
+ * what Airtable will accept*: claiming an option that does not exist fails the
+ * whole ten-record batch rather than the one row. So a new service goes here
+ * first and moves across once the choice exists, syncing as `UNKNOWN` in the
+ * meantime — the row lands with its dates and rating intact and a human can
+ * relabel it, which is exactly what UNKNOWN is for.
+ *
+ * A test asserts every service is in one set or the other, so the choice of
+ * which is deliberate rather than forgotten. Stan, Crave and the five UK
+ * broadcasters all went through this route and have moved across.
+ */
+export const PENDING_NETWORK_OPTIONS: ReadonlySet<string> = new Set([]);
 
 /**
  * Map a network onto a writable select option, falling back to `UNKNOWN`.
@@ -111,6 +136,10 @@ export function toAirtableFields(season: ShowSeason): Record<string, unknown> {
     [FIELD.finishDate]: season.seasonFinishDate,
     [FIELD.firstThirdDate]: season.firstThirdAirDate,
     [FIELD.network]: toAirtableNetwork(season.network),
+    // Null clears the cell, which is the honest rendering of "unrated": a show
+    // that has not premiered has no audience score, and a stale one left behind
+    // from a previous run would be worse than a blank.
+    [FIELD.rating]: season.rating.combined,
   };
 }
 
