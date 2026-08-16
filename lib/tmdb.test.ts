@@ -547,3 +547,19 @@ describe("episodeCode — zero-padded, widening rather than truncating", () => {
     expect(episodeCode(12, 7)).toBe("S12E07");
   });
 });
+
+/**
+ * Both TMDB "HBO Max" networks must resolve, and to the same brand.
+ *
+ * Regression guard: 3186 is the legacy id and 8304 the one TMDB tags new shows
+ * with since the 2025 rebrand. Allowing only 3186 loses the service entirely as
+ * its back catalogue ages out of the window — which is exactly what was
+ * happening, and is invisible because a missing show looks like a quiet week.
+ */
+describe("HBO Max — TMDB carries it under two network ids", () => {
+  it.each([3186, 8304])("resolves network %i to Max", (id) => {
+    expect(
+      qualifyingService(makeShow({ networks: [{ id, name: "HBO Max" }] }))
+    ).toEqual({ name: "Max", kind: "streaming", tier: "core" });
+  });
+});

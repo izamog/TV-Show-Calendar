@@ -19,7 +19,18 @@ const CORE_SERVICES: Omit<AllowedService, "tier">[] = [
   { tmdbNetworkId: 3353, displayName: "Peacock", kind: "streaming" },
   { tmdbNetworkId: 4330, displayName: "Paramount+", kind: "streaming" },
   { tmdbNetworkId: 49, displayName: "HBO", kind: "broadcast" },
+  // TMDB carries HBO Max as TWO networks, both literally named "HBO Max": the
+  // legacy 3186 and 8304, created around the 2025 rebrand back from "Max".
+  // New shows are tagged 8304 and 3186 has gone quiet (0 results in a 60-day
+  // span where 8304 had one), so allowing only 3186 silently loses the service
+  // as its back catalogue ages out. Both are kept — 3186 for already-tagged
+  // shows, 8304 for everything new.
+  //
+  // Both map to the display name "Max" rather than TMDB's "HBO Max" because
+  // that is the existing Airtable select option; renaming would need a new
+  // option and orphan every row already written.
   { tmdbNetworkId: 3186, displayName: "Max", kind: "streaming" },
+  { tmdbNetworkId: 8304, displayName: "Max", kind: "streaming" },
   { tmdbNetworkId: 77, displayName: "Syfy", kind: "broadcast" },
   { tmdbNetworkId: 453, displayName: "Hulu", kind: "streaming" },
   { tmdbNetworkId: 88, displayName: "FX", kind: "broadcast" },
