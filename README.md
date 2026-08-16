@@ -111,8 +111,24 @@ of magnitude more votes than TMDB, and a plain average would let the smaller
 electorate move the number just as far.
 
 TMDB's API carries a show's IMDb *id* but never its IMDb *rating*, so the IMDb
-half comes from [OMDb](https://www.omdbapi.com/). With `OMDB_API_KEY` unset the
-score falls back to TMDB alone — degraded, never broken.
+half is looked up in [IMDb's own `title.ratings` dataset][imdb-datasets], which
+IMDb rebuilds daily. It needs no key and no request budget: the file is fetched
+once, indexed in memory for six hours and shared by every show in a render. If
+it cannot be reached the score falls back to TMDB alone — degraded, never
+broken.
+
+The rating is always the **series** score, keyed by the series `tt…` id from
+TMDB's `external_ids`. IMDb rates episodes separately and the dataset carries
+both, so an episode id in that slot would quietly report one episode's reception
+as the show's.
+
+This replaced [OMDb](https://www.omdbapi.com/), which was the source until it
+proved to lag IMDb by weeks on exactly the shows this calendar is about: on a
+live feed of 22 shows OMDb had no series rating for 18 of them, and where it did
+answer it was stale — 5.6 from 74 votes for a series IMDb itself scored 4.9 from
+393. `OMDB_API_KEY` is no longer read.
+
+[imdb-datasets]: https://developer.imdb.com/non-commercial-datasets/
 
 A score is ignored below a vote floor (20 on TMDB, 100 on IMDb), and a show with
 neither source above its floor shows no rating at all. That is the normal state
@@ -195,7 +211,8 @@ lib/
   tmdb-client.ts          TMDB wire layer: auth, fetch, concurrency, response shapes
   favourites.ts           The owner's TMDB favourites + which season is airing
   tmdb.ts                 Filtering, Episode[]/ShowSeason[] assembly, orchestration
-  rating.ts               Vote-weighted TMDB + IMDb (via OMDb) blended score
+  rating.ts               Vote-weighted TMDB + IMDb blended score
+  imdb.ts                 IMDb series ratings, indexed from IMDb's daily dataset
   fill.ts                 Tops thin blog post slots up from the fill tier
   ical.ts                 RFC 5545 feed builder
   airtable.ts             Upserts the season feed into an Airtable table
@@ -237,7 +254,6 @@ Set **either** credential (the v4 read token is preferred when both are set):
 | `TMDB_API_KEY`            | one of these two    | TMDB **v3** API key.                             |
 | `TMDB_READ_ACCESS_TOKEN`  | one of these two    | TMDB **v4** read access token (Bearer JWT). Also unlocks [favourited shows](#favourited-shows), which the v3 key alone cannot reach. |
 | `NEXT_PUBLIC_SITE_URL`    | no                  | Only for custom domains; the copy button reads the live origin at runtime, so this is normally unnecessary. |
-| `OMDB_API_KEY`            | no                  | IMDb half of the blended rating. Unset → TMDB-only scores. Free key, 1,000 req/day. |
 | `AIRTABLE_TOKEN`          | no                  | Enables the Airtable sync. PAT with `data.records:write`.        |
 | `AIRTABLE_BASE_ID`        | no                  | `app…` id of the destination base.                               |
 | `AIRTABLE_TABLE_ID`       | no                  | `tbl…` id of the destination table.                              |

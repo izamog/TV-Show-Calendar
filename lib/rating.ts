@@ -4,17 +4,12 @@ import type { Rating } from "./types";
  * Audience scores: TMDB's own `vote_average` blended with IMDb's rating.
  *
  * TMDB's API does not expose IMDb ratings at all — it only carries the IMDb
- * *id* — so the IMDb half comes from OMDb, a free read-only mirror of IMDb's
- * public data. That is an extra network dependency on a 1,000-request daily
- * budget, so every part of this module is built to degrade rather than fail:
- * an unset key, a rate-limit, a timeout or an unrated show all produce a
- * partial or null rating, never an exception. A missing rating is a normal
- * state here, not an error — most shows have not premiered when we first see
- * them, and an unaired show genuinely has nothing to average.
+ * *id* — so the IMDb half is fetched separately, from IMDb's own daily dataset
+ * in `lib/imdb.ts`. Either half may be missing and the blend is built to say so
+ * rather than fail. A missing rating is a normal state here, not an error —
+ * most shows have not premiered when we first see them, and an unaired show
+ * genuinely has nothing to average.
  */
-
-const OMDB_BASE = "https://www.omdbapi.com/";
-const REQUEST_TIMEOUT_MS = 8_000;
 
 /**
  * Minimum votes before a score is trusted.
@@ -34,77 +29,6 @@ export const UNRATED: Rating = {
   imdb: null,
   voteCount: 0,
 };
-
-/** True when OMDb is configured. Unset is a supported deployment, not a fault. */
-export function hasOmdbKey(): boolean {
-  return Boolean(process.env.OMDB_API_KEY?.trim());
-}
-
-interface OmdbResponse {
-  Response?: string;
-  imdbRating?: string;
-  imdbVotes?: string;
-}
-
-/**
- * Parse one of OMDb's stringly-typed numeric fields.
- *
- * OMDb returns everything as a string and uses the literal "N/A" for absent
- * values, including on shows that exist but have no rating yet. Votes arrive
- * comma-grouped ("12,345"), which `Number` alone reads as NaN.
- */
-function parseOmdbNumber(value: string | undefined): number | null {
-  if (!value || value === "N/A") return null;
-  const parsed = Number(value.replace(/,/g, ""));
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-/**
- * Fetch a show's IMDb rating by IMDb id, or null if it cannot be had.
- *
- * Never throws: the caller is resolving a whole calendar and one unrated show
- * must not take the grid down with it.
- */
-export async function fetchImdbRating(
-  imdbId: string | null | undefined
-): Promise<{ rating: number; votes: number } | null> {
-  const apiKey = process.env.OMDB_API_KEY?.trim();
-  if (!apiKey || !imdbId) return null;
-
-  const url = new URL(OMDB_BASE);
-  url.searchParams.set("i", imdbId);
-  url.searchParams.set("apikey", apiKey);
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, REQUEST_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: { Accept: "application/json" },
-      // Same hour-long revalidation as TMDB: ratings move slowly, and the
-      // daily OMDb budget is small enough that re-asking per request would
-      // exhaust it well before the cron did.
-      next: { revalidate: 3600 },
-    });
-    if (!res.ok) return null;
-
-    const data = (await res.json()) as OmdbResponse;
-    // OMDb signals "no such title" with a 200 and Response:"False".
-    if (data.Response === "False") return null;
-
-    const rating = parseOmdbNumber(data.imdbRating);
-    const votes = parseOmdbNumber(data.imdbVotes);
-    if (rating === null || votes === null) return null;
-    return { rating, votes };
-  } catch (err) {
-    console.error(`[omdb] rating lookup failed for ${imdbId}:`, err);
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 /**
  * Blend the two scores into one, weighted by how many people voted.
