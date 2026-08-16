@@ -18,7 +18,7 @@ export default function CopyFeedButton() {
     // an insecure origin it is genuinely undefined, which is what the fallback
     // below exists for. Widening the type says so, rather than leaving a guard
     // that reads as dead code against the lib's own typings.
-    const clipboard: Clipboard | undefined = navigator.clipboard;
+    const clipboard = navigator.clipboard as Clipboard | undefined;
 
     try {
       if (clipboard) {

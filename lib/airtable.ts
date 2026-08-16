@@ -148,7 +148,9 @@ export async function syncShowSeasons(
 
   for (const batch of chunk(seasons, BATCH_SIZE)) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, REQUEST_TIMEOUT_MS);
     try {
       const res = await fetch(url, {
         method: "PATCH",
