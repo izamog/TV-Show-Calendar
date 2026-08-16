@@ -158,7 +158,7 @@ interface TmdbSeasonEpisode {
   air_date?: string | null;
   still_path?: string | null;
 }
-interface TmdbSeasonDetails {
+export interface TmdbSeasonDetails {
   episodes?: TmdbSeasonEpisode[];
   poster_path?: string | null;
 }
@@ -268,6 +268,77 @@ export function firstThirdMarker(
   };
 }
 
+/**
+ * Re-check the constraints Discover is loose about against `/tv/{id}`, and
+ * return the show's primary allowed service — or null when the show fails any
+ * of them. Returning the service rather than a boolean is deliberate: the
+ * caller needs it immediately, and answering "does it qualify" and "on what"
+ * separately would mean walking the network list twice.
+ */
+export function qualifyingService(
+  details: TmdbShowDetails
+): { name: string; kind: ServiceKind } | null {
+  if (details.original_language && details.original_language !== "en") {
+    return null;
+  }
+  if (!isScripted(details)) return null;
+  if (isReturningSeries(details)) return null;
+  if (hasExcludedKeyword(details)) return null;
+  return pickPrimaryService(details.networks);
+}
+
+/**
+ * Map a fetched Season 1 into the Episode rows that fall inside `rangeDays`.
+ *
+ * Pure given its arguments, which is the point: this is where air-date
+ * resolution, London date placement and range filtering all land, and it is
+ * the part worth testing without reaching for the network.
+ */
+export function episodesInRange(args: {
+  showId: number;
+  showName: string;
+  showOverview: string | null;
+  season: TmdbSeasonDetails;
+  service: { name: string; kind: ServiceKind };
+  rangeDays: ReadonlySet<string>;
+}): Episode[] {
+  const { showId, showName, showOverview, season, service, rangeDays } = args;
+  const episodes = season.episodes ?? [];
+  const seasonEpisodeCount = episodes.length;
+  const out: Episode[] = [];
+
+  for (const ep of episodes) {
+    if (!ep.air_date) continue;
+    const airInstantUtcMs = resolveAirInstantUtcMs(ep.air_date, service.kind);
+    const dateKey = londonDateKey(airInstantUtcMs);
+    if (!rangeDays.has(dateKey)) continue;
+
+    const code = `S01E${String(ep.episode_number).padStart(2, "0")}`;
+    const posterPath = ep.still_path ?? season.poster_path ?? null;
+
+    out.push({
+      id: `${showId}-${code}`,
+      showId,
+      showName,
+      episodeName: ep.name?.trim() || `Episode ${ep.episode_number}`,
+      episodeOverview: cleanOverview(ep.overview),
+      showOverview,
+      seasonNumber: 1,
+      episodeNumber: ep.episode_number,
+      code,
+      seasonEpisodeCount,
+      posterUrl: posterPath ? `${TMDB_IMAGE_BASE}${posterPath}` : null,
+      serviceName: service.name,
+      serviceKind: service.kind,
+      airInstantUtcMs,
+      londonDateKey: dateKey,
+      isPremiere: ep.episode_number === 1,
+    });
+  }
+
+  return out;
+}
+
 /** One candidate show that survived filtering: its season summary and its in-range episodes. */
 interface ResolvedShow {
   season: ShowSeason;
@@ -337,15 +408,8 @@ async function resolveShowsInRange(
           auth
         );
 
-        // Re-verify the constraints Discover can be loose about.
-        if (details.original_language && details.original_language !== "en") return null;
-        if (!isScripted(details)) return null;
-        if (isReturningSeries(details)) return null;
-        if (hasExcludedKeyword(details)) return null;
-        const service = pickPrimaryService(details.networks);
+        const service = qualifyingService(details);
         if (!service) return null;
-
-        const showOverview = cleanOverview(details.overview);
 
         const season = await tmdbGet<TmdbSeasonDetails>(
           `/tv/${showId}/season/1`,
@@ -353,52 +417,29 @@ async function resolveShowsInRange(
           auth
         );
         const episodes = season.episodes ?? [];
-        const seasonEpisodeCount = episodes.length;
 
         // A run this short is a special or a two-parter, not a season.
-        if (seasonEpisodeCount < MIN_SEASON_EPISODES) return null;
+        if (episodes.length < MIN_SEASON_EPISODES) return null;
 
-        const out: Episode[] = [];
-        for (const ep of episodes) {
-          if (!ep.air_date) continue;
-          const airInstantUtcMs = resolveAirInstantUtcMs(ep.air_date, service.kind);
-          const dateKey = londonDateKey(airInstantUtcMs);
-          if (!rangeDays.has(dateKey)) continue;
-
-          const code = `S01E${String(ep.episode_number).padStart(2, "0")}`;
-          const posterPath = ep.still_path ?? season.poster_path ?? null;
-
-          out.push({
-            id: `${showId}-${code}`,
-            showId,
-            showName: details.name,
-            episodeName: ep.name?.trim() || `Episode ${ep.episode_number}`,
-            episodeOverview: cleanOverview(ep.overview),
-            showOverview,
-            seasonNumber: 1,
-            episodeNumber: ep.episode_number,
-            code,
-            seasonEpisodeCount,
-            posterUrl: posterPath ? `${TMDB_IMAGE_BASE}${posterPath}` : null,
-            serviceName: service.name,
-            serviceKind: service.kind,
-            airInstantUtcMs,
-            londonDateKey: dateKey,
-            isPremiere: ep.episode_number === 1,
-          });
-        }
         return {
           season: {
             id: `${showId}-S01`,
             showId,
             name: details.name,
             seasonNumber: 1,
-            episodeCount: seasonEpisodeCount,
+            episodeCount: episodes.length,
             ...seasonAirDateRange(episodes),
             ...firstThirdMarker(episodes),
             network: service.name,
           },
-          episodes: out,
+          episodes: episodesInRange({
+            showId,
+            showName: details.name,
+            showOverview: cleanOverview(details.overview),
+            season,
+            service,
+            rangeDays,
+          }),
         };
       } catch (err) {
         console.error(`[tmdb] skipping show ${showId}:`, err);

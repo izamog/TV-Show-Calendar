@@ -1,7 +1,11 @@
 import Link from "next/link";
 import CalendarGrid from "@/components/CalendarGrid";
 import CopyFeedButton from "@/components/CopyFeedButton";
-import { getRollingWindow, londonTodayKey } from "@/lib/dates";
+import {
+  getRollingWindow,
+  londonTodayKey,
+  type RollingWindow,
+} from "@/lib/dates";
 import { getPeriodEpisodes } from "@/lib/tmdb";
 import type { Episode } from "@/lib/types";
 
@@ -73,6 +77,47 @@ function WeekArrow({
   );
 }
 
+/**
+ * The week-stepping controls and the range they describe, plus the live region
+ * that announces a change. Grouped here because the arrows, the heading and the
+ * announcement are one control: they all read from the same window and are
+ * meaningless apart.
+ */
+function WeekNav({ window }: { window: RollingWindow }) {
+  return (
+    <>
+      <div className="mb-4 flex items-center gap-3">
+        <div className="flex flex-col gap-1.5">
+          <WeekArrow
+            direction="up"
+            targetOffset={window.earlierOffset}
+            enabled={window.canGoEarlier}
+          />
+          <WeekArrow
+            direction="down"
+            targetOffset={window.laterOffset}
+            enabled={window.canGoLater}
+          />
+        </div>
+        <div>
+          <h2 className="text-xl font-semibold text-neutral-50 sm:text-2xl">
+            {window.rangeLabel}
+          </h2>
+          <p className="mt-0.5 text-sm text-neutral-300">
+            Week {window.weekOffset + 1}–{window.weekOffset + 2} of 4 · showing
+            14 of 28 days
+          </p>
+        </div>
+      </div>
+
+      {/* Announce the visible range when the arrows swap it out. */}
+      <p aria-live="polite" className="sr-only">
+        Showing {window.rangeLabel}
+      </p>
+    </>
+  );
+}
+
 export default async function HomePage({
   searchParams,
 }: {
@@ -109,34 +154,7 @@ export default async function HomePage({
         <CopyFeedButton />
       </header>
 
-      <div className="mb-4 flex items-center gap-3">
-        <div className="flex flex-col gap-1.5">
-          <WeekArrow
-            direction="up"
-            targetOffset={window.earlierOffset}
-            enabled={window.canGoEarlier}
-          />
-          <WeekArrow
-            direction="down"
-            targetOffset={window.laterOffset}
-            enabled={window.canGoLater}
-          />
-        </div>
-        <div>
-          <h2 className="text-xl font-semibold text-neutral-50 sm:text-2xl">
-            {window.rangeLabel}
-          </h2>
-          <p className="mt-0.5 text-sm text-neutral-300">
-            Week {window.weekOffset + 1}–{window.weekOffset + 2} of 4 · showing
-            14 of 28 days
-          </p>
-        </div>
-      </div>
-
-      {/* Announce the visible range when the arrows swap it out. */}
-      <p aria-live="polite" className="sr-only">
-        Showing {window.rangeLabel}
-      </p>
+      <WeekNav window={window} />
 
       {error ? (
         <div className="rounded-xl border border-red-800 bg-red-950/40 p-6 text-base text-red-100">
