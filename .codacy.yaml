@@ -1,0 +1,27 @@
+---
+# Codacy repository configuration.
+#
+# Note that the presence of this file makes the "Ignored files" settings in the
+# Codacy UI inert — exclusions have to be declared here instead. That is the
+# point: the list is version-controlled and reviewable rather than living in a
+# dashboard nobody reads.
+exclude_paths:
+  # Test files are excluded from analysis because Codacy's complexity metric
+  # counts them, and they dominate it: of the five files over the complexity
+  # threshold, four were tests. A table-driven test with a dozen `it.each`
+  # cases scores as high as branching production code while carrying none of
+  # the risk.
+  #
+  # The effect was that the metric moved the wrong way every time the suite
+  # improved — adding the lib/tmdb internals tests raised coverage by 9.7% and
+  # complexity by 52 points in the same commit. A measurement that penalises
+  # writing tests is worth turning off rather than working around.
+  #
+  # Excluded from analysis only. Coverage is unaffected: the lcov report is
+  # generated from lib/ source and never included test files to begin with.
+  - "**/*.test.ts"
+# package-lock.json is deliberately NOT excluded, despite being the one file
+# still raising a complexity warning. Excluding it would also stop Trivy
+# scanning it, and that scan is what found all 24 dependency CVEs — including a
+# critical middleware authorization bypass. One cosmetic warning about a
+# generated file is a much smaller cost than going blind to the next CVE.
