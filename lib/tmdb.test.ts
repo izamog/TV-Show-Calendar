@@ -5,7 +5,10 @@ import {
   hasExcludedKeyword,
   seasonAirDateRange,
   firstThirdMarker,
+  qualifyingService,
+  episodesInRange,
   type TmdbShowDetails,
+  type TmdbSeasonDetails,
 } from "./tmdb";
 
 function makeShow(overrides: Partial<TmdbShowDetails> = {}): TmdbShowDetails {
@@ -244,5 +247,138 @@ describe("firstThirdMarker — ceil(episodeCount / 3), rounded UP", () => {
       firstThirdEpisodeNumber: null,
       firstThirdAirDate: null,
     });
+  });
+});
+
+describe("qualifyingService — the filters Discover is loose about, re-checked", () => {
+  it("returns the allowlisted service for an ordinary scripted show", () => {
+    expect(qualifyingService(makeShow())).toEqual({
+      name: "FX",
+      kind: "broadcast",
+    });
+  });
+
+  it("rejects a non-English show even when Discover returned it", () => {
+    expect(qualifyingService(makeShow({ original_language: "es" }))).toBeNull();
+  });
+
+  it("rejects an excluded type", () => {
+    expect(qualifyingService(makeShow({ type: "Reality" }))).toBeNull();
+  });
+
+  it("rejects a show already past its first season", () => {
+    expect(qualifyingService(makeShow({ number_of_seasons: 4 }))).toBeNull();
+  });
+
+  it("rejects a show carrying an excluded keyword", () => {
+    const withKeyword = makeShow({
+      keywords: { results: [{ id: 346018, name: "vertical screen" }] },
+    });
+    expect(qualifyingService(withKeyword)).toBeNull();
+  });
+
+  it("rejects a show whose networks are all off the allowlist", () => {
+    // 213 is Netflix, excluded deliberately.
+    expect(
+      qualifyingService(makeShow({ networks: [{ id: 213, name: "Netflix" }] }))
+    ).toBeNull();
+  });
+});
+
+describe("episodesInRange — season to in-range Episode rows", () => {
+  const service = { name: "FX", kind: "broadcast" as const };
+  const rangeDays = new Set(["2026-08-10", "2026-08-11", "2026-08-12"]);
+
+  function makeSeason(
+    episodes: NonNullable<TmdbSeasonDetails["episodes"]>,
+    poster: string | null = "/season.jpg"
+  ): TmdbSeasonDetails {
+    return { episodes, poster_path: poster };
+  }
+
+  function build(season: TmdbSeasonDetails) {
+    return episodesInRange({
+      showId: 42,
+      showName: "Test Show",
+      showOverview: "A show.",
+      season,
+      service,
+      rangeDays,
+    });
+  }
+
+  it("keeps episodes inside the range and drops those outside it", () => {
+    const out = build(
+      makeSeason([
+        { episode_number: 1, name: "Pilot", air_date: "2026-08-11" },
+        { episode_number: 2, name: "Later", air_date: "2026-08-20" },
+      ])
+    );
+    expect(out.map((e) => e.episodeNumber)).toEqual([1]);
+    expect(out[0].londonDateKey).toBe("2026-08-11");
+  });
+
+  it("skips episodes with no air date rather than guessing one", () => {
+    const out = build(
+      makeSeason([
+        { episode_number: 1, name: "Pilot", air_date: null },
+        { episode_number: 2, name: "Second", air_date: "2026-08-11" },
+      ])
+    );
+    expect(out.map((e) => e.episodeNumber)).toEqual([2]);
+  });
+
+  it("marks only episode 1 as the premiere and builds a padded code", () => {
+    const out = build(
+      makeSeason([
+        { episode_number: 1, name: "Pilot", air_date: "2026-08-10" },
+        { episode_number: 2, name: "Second", air_date: "2026-08-11" },
+      ])
+    );
+    expect(out.map((e) => [e.code, e.isPremiere])).toEqual([
+      ["S01E01", true],
+      ["S01E02", false],
+    ]);
+    expect(out[0].id).toBe("42-S01E01");
+  });
+
+  it("counts the whole season, not just the in-range slice", () => {
+    const out = build(
+      makeSeason([
+        { episode_number: 1, name: "Pilot", air_date: "2026-08-11" },
+        { episode_number: 2, name: "Out", air_date: "2026-09-01" },
+        { episode_number: 3, name: "Out", air_date: "2026-09-08" },
+      ])
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].seasonEpisodeCount).toBe(3);
+  });
+
+  it("falls back to the season poster when an episode has no still", () => {
+    const out = build(
+      makeSeason([{ episode_number: 1, name: "Pilot", air_date: "2026-08-11" }])
+    );
+    expect(out[0].posterUrl).toContain("/season.jpg");
+  });
+
+  it("has no poster at all when neither the still nor the season has one", () => {
+    const out = build(
+      makeSeason(
+        [{ episode_number: 1, name: "Pilot", air_date: "2026-08-11" }],
+        null
+      )
+    );
+    expect(out[0].posterUrl).toBeNull();
+  });
+
+  it("names an untitled episode by its number rather than leaving it blank", () => {
+    const out = build(
+      makeSeason([{ episode_number: 7, name: "   ", air_date: "2026-08-11" }])
+    );
+    expect(out[0].episodeName).toBe("Episode 7");
+  });
+
+  it("returns nothing for a season with no episodes", () => {
+    expect(build(makeSeason([]))).toEqual([]);
   });
 });
