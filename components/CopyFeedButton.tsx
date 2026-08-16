@@ -14,9 +14,15 @@ export default function CopyFeedButton() {
 
   const copy = useCallback(async () => {
     const url = `${window.location.origin}/api/calendar`;
+    // The DOM lib types `navigator.clipboard` as always present. It is not: on
+    // an insecure origin it is genuinely undefined, which is what the fallback
+    // below exists for. Widening the type says so, rather than leaving a guard
+    // that reads as dead code against the lib's own typings.
+    const clipboard: Clipboard | undefined = navigator.clipboard;
+
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(url);
+      if (clipboard) {
+        await clipboard.writeText(url);
       } else {
         // Fallback for non-secure contexts where the Clipboard API is absent.
         const el = document.createElement("textarea");
@@ -33,7 +39,9 @@ export default function CopyFeedButton() {
     } catch {
       setState("error");
     } finally {
-      setTimeout(() => setState("idle"), 2000);
+      setTimeout(() => {
+        setState("idle");
+      }, 2000);
     }
   }, []);
 
@@ -47,7 +55,12 @@ export default function CopyFeedButton() {
   return (
     <button
       type="button"
-      onClick={copy}
+      // `copy` handles its own failures, so the promise is deliberately not
+      // awaited here. `void` states that rather than leaving a floating promise
+      // for a reader — or a linter — to wonder about.
+      onClick={() => {
+        void copy();
+      }}
       // min-h-11 keeps the target at the 44px AAA touch size (SC 2.5.5).
       className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-2 text-base font-medium text-neutral-50 transition hover:border-neutral-500 hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-950"
       aria-live="polite"
