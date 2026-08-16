@@ -1,7 +1,7 @@
 import Link from "next/link";
 import CalendarGrid from "@/components/CalendarGrid";
 import CopyFeedButton from "@/components/CopyFeedButton";
-import { getRollingWindow, londonDateKey } from "@/lib/dates";
+import { getRollingWindow, londonTodayKey } from "@/lib/dates";
 import { getPeriodEpisodes } from "@/lib/tmdb";
 import type { Episode } from "@/lib/types";
 
@@ -76,11 +76,14 @@ function WeekArrow({
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams: { week?: string };
+  // Next 15 made searchParams a Promise: it is request data, and awaiting it
+  // is what lets the rest of the page prerender before the request arrives.
+  searchParams: Promise<{ week?: string }>;
 }) {
+  const { week } = await searchParams;
   // An absent or malformed ?week clamps to 0 — the current week.
-  const window = getRollingWindow(searchParams.week);
-  const todayKey = londonDateKey(Date.now());
+  const window = getRollingWindow(week);
+  const todayKey = londonTodayKey();
 
   let episodes: Episode[] = [];
   let error: string | null = null;
