@@ -30,7 +30,21 @@ jobs:
         run: npm run lint
 
       - name: Unit tests
-        run: npm test
+        run: npm run test:coverage
+
+      # Codacy reports coverage as a repository metric; without an upload it
+      # reads as zero and drags the grade down regardless of how well lib/ is
+      # tested. Skipped on forks, where the secret is not exposed, so a fork's
+      # pull request still runs the rest of the pipeline instead of failing at
+      # a step it cannot authenticate.
+      - name: Upload coverage to Codacy
+        if: env.CODACY_PROJECT_TOKEN != ''
+        uses: codacy/codacy-coverage-reporter-action@v1
+        with:
+          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
+          coverage-reports: coverage/lcov.info
+        env:
+          CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
 
       - name: Production build
         run: npm run build
