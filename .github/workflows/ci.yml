@@ -39,7 +39,10 @@ jobs:
       # a step it cannot authenticate.
       - name: Upload coverage to Codacy
         if: env.CODACY_PROJECT_TOKEN != ''
-        uses: codacy/codacy-coverage-reporter-action@v1
+        # Pinned to a SHA, not @v1. A mutable tag on a third-party action can
+        # be repointed at new code by its owner, which would run here with the
+        # coverage token in scope. This is v1 as of 2026-08-16.
+        uses: codacy/codacy-coverage-reporter-action@89d6c85cfafaec52c72b6c5e8b2878d33104c699
         with:
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
           coverage-reports: coverage/lcov.info
