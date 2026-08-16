@@ -45,12 +45,14 @@ export default function CopyFeedButton() {
     }
   }, []);
 
+  // Kept short so the label never wraps to two lines beside the week arrows at
+  // 320px — a wrapped button label reads as a styling error, not a choice.
   const label =
     state === "copied"
-      ? "Copied!"
+      ? "Link copied"
       : state === "error"
         ? "Copy failed"
-        : "Copy iCal Feed Link";
+        : "Copy feed link";
 
   return (
     <button
@@ -62,13 +64,14 @@ export default function CopyFeedButton() {
         void copy();
       }}
       // min-h-11 keeps the target at the 44px AAA touch size (SC 2.5.5).
-      className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-2 text-base font-medium text-neutral-50 transition hover:border-neutral-500 hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-950"
+      // whitespace-nowrap: the affordance is a single-line object at every width.
+      className="inline-flex min-h-11 items-center gap-xs whitespace-nowrap border-hair border-rule-strong bg-paper px-sm text-xs font-semibold uppercase tracking-[0.14em] text-ink transition-colors duration-micro ease-out hover:bg-accent hover:text-accent-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-paper active:translate-y-px disabled:cursor-not-allowed disabled:border-rule disabled:bg-paper disabled:text-muted"
       aria-live="polite"
     >
       <svg
         aria-hidden="true"
         viewBox="0 0 24 24"
-        className="h-4 w-4"
+        className="h-3.5 w-3.5"
         fill="none"
         stroke="currentColor"
         strokeWidth="2"

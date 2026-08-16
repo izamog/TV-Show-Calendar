@@ -1,11 +1,68 @@
+/* Hallmark · macrostructure: Catalogue · theme: Almanac · genre: editorial
+ * Full stamp — palette, axes, critique scores, gate results — is at the top of
+ * ../tokens.css, which this file's utilities resolve against. */
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: dark;
+/* Token layer lives in ../tokens.css and is imported by app/layout.tsx ahead of
+   this file, so every value below resolves to a name declared there.
+
+   It is imported from the layout rather than `@import`ed here on purpose: this
+   project's PostCSS chain is tailwindcss + autoprefixer with no postcss-import,
+   so an @import would be emitted as a runtime request instead of being inlined. */
+
+@layer base {
+  /* clip, not hidden: `hidden` opens a new scroll container and would break
+     position: sticky on any descendant. */
+  html,
+  body {
+    overflow-x: clip;
+  }
+
+  body {
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    font-size: var(--text-base);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    /* The colophon closes the page at the bottom edge; keep it clear of the
+       iOS home indicator (layout.tsx sets viewport-fit: cover). */
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Display type wraps inside long words rather than pushing the page wide —
+     a single unbroken show title must never open a horizontal scrollbar. */
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+
+  /* Every figure on this page is columnar — air times, episode numbers,
+     ratings, day numerals. None of them may shift horizontally between rows. */
+  :where(.tabular, time, .u-figure) {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background-color: var(--color-accent);
+    color: var(--color-accent-ink);
+  }
 }
 
-body {
-  @apply bg-neutral-950 text-neutral-100 antialiased;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 150ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 150ms !important;
+  }
 }

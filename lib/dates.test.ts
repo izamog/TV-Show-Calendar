@@ -4,6 +4,7 @@ import {
   parseWeekOffset,
   formatFullDate,
   MAX_WEEK_OFFSET,
+  DEFAULT_WEEK_OFFSET,
   resolveAirInstantUtcMs,
   londonDateKey,
   londonTodayKey,
@@ -54,23 +55,29 @@ describe("getRollingWindow — 28-day period, 14 visible, week-stepped", () => {
     expect(w.periodStartKey < londonTodayKey(now)).toBe(true);
   });
 
-  it("shows exactly 14 days, starting Monday and ending Sunday", () => {
+  it("shows exactly one Monday–Sunday week", () => {
     for (let offset = 0; offset <= MAX_WEEK_OFFSET; offset++) {
       const w = getRollingWindow(offset, new Date("2026-08-14T10:00:00Z"));
-      expect(w.visibleDayKeys).toHaveLength(14);
+      expect(w.visibleDayKeys).toHaveLength(7);
       expect(weekdayOf(w.visibleDayKeys[0])).toBe(1);
-      expect(weekdayOf(w.visibleDayKeys[13])).toBe(0);
+      expect(weekdayOf(w.visibleDayKeys[6])).toBe(0);
     }
   });
 
-  it("steps the visible slice by exactly one week per offset", () => {
+  it("offers exactly one offset per week of the period", () => {
+    // 28 days shown a week at a time is four positions: 0, 1, 2, 3.
+    expect(MAX_WEEK_OFFSET).toBe(3);
+  });
+
+  it("steps the visible week by exactly one week per offset", () => {
     const now = new Date("2026-08-14T10:00:00Z"); // week of Mon 2026-08-10
     expect(getRollingWindow(0, now).visibleDayKeys[0]).toBe("2026-08-03");
     expect(getRollingWindow(1, now).visibleDayKeys[0]).toBe("2026-08-10");
     expect(getRollingWindow(2, now).visibleDayKeys[0]).toBe("2026-08-17");
+    expect(getRollingWindow(3, now).visibleDayKeys[0]).toBe("2026-08-24");
   });
 
-  it("keeps the visible slice inside the 28-day period at every offset", () => {
+  it("keeps the visible week inside the 28-day period at every offset", () => {
     const now = new Date("2026-08-14T10:00:00Z");
     for (let offset = 0; offset <= MAX_WEEK_OFFSET; offset++) {
       const w = getRollingWindow(offset, now);
@@ -79,7 +86,21 @@ describe("getRollingWindow — 28-day period, 14 visible, week-stepped", () => {
     }
     // The last offset must land exactly on the end of the period.
     const last = getRollingWindow(MAX_WEEK_OFFSET, now);
-    expect(last.visibleDayKeys[13]).toBe(last.periodEndKey);
+    expect(last.visibleDayKeys[6]).toBe(last.periodEndKey);
+  });
+
+  it("opens on the week containing today, not the hindsight week", () => {
+    // The whole point of DEFAULT_WEEK_OFFSET: with a week on screen instead of
+    // a fortnight, offset 0 is entirely in the past and landing there would
+    // show a page that finished on Sunday.
+    const now = new Date("2026-08-14T10:00:00Z"); // Friday of the week of Mon 10th
+    const landed = getRollingWindow(undefined, now);
+    expect(landed.weekOffset).toBe(DEFAULT_WEEK_OFFSET);
+    expect(landed.visibleDayKeys).toContain(londonTodayKey(now));
+
+    // ...and the hindsight week is still reachable by asking for it.
+    expect(getRollingWindow("0", now).weekOffset).toBe(0);
+    expect(getRollingWindow("0", now).visibleDayKeys[0]).toBe("2026-08-03");
   });
 
   it("produces 28 consecutive days with no gaps or duplicates across a DST change", () => {
@@ -120,27 +141,30 @@ describe("getRollingWindow — 28-day period, 14 visible, week-stepped", () => {
       const w = getRollingWindow(bad as string | null | undefined, now);
       expect(w.weekOffset).toBeGreaterThanOrEqual(0);
       expect(w.weekOffset).toBeLessThanOrEqual(MAX_WEEK_OFFSET);
-      expect(w.visibleDayKeys).toHaveLength(14);
+      expect(w.visibleDayKeys).toHaveLength(7);
     }
+    // Out-of-range integers clamp to the nearest end of the period; only
+    // unparseable input falls back to the default landing week.
     expect(getRollingWindow("99", now).weekOffset).toBe(MAX_WEEK_OFFSET);
     expect(getRollingWindow("-5", now).weekOffset).toBe(0);
     expect(getRollingWindow("2", now).weekOffset).toBe(2);
+    expect(getRollingWindow("nonsense", now).weekOffset).toBe(DEFAULT_WEEK_OFFSET);
   });
 
-  it("labels the visible range, collapsing a shared month or year", () => {
+  it("labels the visible week, collapsing a shared month or year", () => {
     const now = new Date("2026-08-14T10:00:00Z");
-    // Mon 3 Aug – Sun 16 Aug: same month and year.
-    expect(getRollingWindow(0, now).rangeLabel).toBe("3 – 16 Aug 2026");
-    // Mon 17 Aug – Sun 30 Aug: still the same month.
-    expect(getRollingWindow(2, now).rangeLabel).toBe("17 – 30 Aug 2026");
-    // Crossing a month boundary keeps both. en-GB abbreviates September as
-    // "Sept" (4 letters) — that is correct ICU output, not a typo.
+    // Mon 3 Aug – Sun 9 Aug: same month and year.
+    expect(getRollingWindow(0, now).rangeLabel).toBe("3 – 9 Aug 2026");
+    // Mon 17 Aug – Sun 23 Aug: still the same month.
+    expect(getRollingWindow(2, now).rangeLabel).toBe("17 – 23 Aug 2026");
+    // Mon 31 Aug – Sun 6 Sept crosses a month, so both are kept. en-GB
+    // abbreviates September as "Sept" (4 letters) — correct ICU output, not a typo.
     expect(getRollingWindow(2, new Date("2026-08-28T10:00:00Z")).rangeLabel).toBe(
-      "31 Aug – 13 Sept 2026"
+      "31 Aug – 6 Sept 2026"
     );
-    // Crossing a year boundary keeps both years.
+    // Mon 28 Dec – Sun 3 Jan crosses a year, so both years are kept.
     expect(getRollingWindow(2, new Date("2026-12-21T10:00:00Z")).rangeLabel).toBe(
-      "28 Dec 2026 – 10 Jan 2027"
+      "28 Dec 2026 – 3 Jan 2027"
     );
   });
 
@@ -152,11 +176,18 @@ describe("getRollingWindow — 28-day period, 14 visible, week-stepped", () => {
 });
 
 describe("parseWeekOffset", () => {
-  it("clamps to the valid range and defaults to the current week", () => {
-    expect(parseWeekOffset(undefined)).toBe(0);
-    expect(parseWeekOffset(null)).toBe(0);
-    expect(parseWeekOffset("")).toBe(0);
-    expect(parseWeekOffset("abc")).toBe(0);
+  it("falls back to the default week when there is nothing to parse", () => {
+    expect(parseWeekOffset(undefined)).toBe(DEFAULT_WEEK_OFFSET);
+    expect(parseWeekOffset(null)).toBe(DEFAULT_WEEK_OFFSET);
+    expect(parseWeekOffset("")).toBe(DEFAULT_WEEK_OFFSET);
+    expect(parseWeekOffset("abc")).toBe(DEFAULT_WEEK_OFFSET);
+    expect(parseWeekOffset("1.5")).toBe(DEFAULT_WEEK_OFFSET);
+  });
+
+  it("honours a well-formed integer, clamped into the period", () => {
+    // 0 is meaningful — it is the hindsight week — so it must survive the
+    // fallback rather than being treated as "nothing was asked for".
+    expect(parseWeekOffset("0")).toBe(0);
     expect(parseWeekOffset("1")).toBe(1);
     expect(parseWeekOffset("-3")).toBe(0);
     expect(parseWeekOffset("100")).toBe(MAX_WEEK_OFFSET);

@@ -1,0 +1,98 @@
+/* Hallmark · genre: editorial · macrostructure: Catalogue · theme: Almanac
+ * enrichment: none (typography only) · nav: N6 newspaper masthead · footer: Ft4 dense colophon
+ * tone: editorial · audience: public TV-listings readers · use: scan the fortnight at a glance
+ * anchor hue: 75 (warm oat) · accent hue: 28 (listings red)
+ * axes: paper-band=light · display-style=roman-serif · accent-hue=warm
+ * pre-emit critique: P5 H5 E5 S5 R5 V4
+ * contrast: pass (40–41) · mobile: pass (34, 49, 50–57) · tokens: pass (48)
+ * nav: N6 · footer: Ft4 · slop: pass (42–45) · honest: pass (46) · chrome: pass (47)
+ *
+ * The portable token layer. Imported by app/layout.tsx ahead of globals.css, and
+ * mapped into Tailwind's theme in tailwind.config.ts so every utility class in
+ * the app resolves back to a name declared here. Nothing in app/ or components/
+ * may write a raw colour, font or duration.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ---- Paper and ink -------------------------------------------------- */
+  /* Warm oat, hue 75. Never #fff: a tinted paper is what stops episode
+     artwork reading as though it were pasted onto a lightbox. */
+  --color-paper: oklch(96.5% 0.012 75);
+  --color-paper-2: oklch(93.5% 0.014 75); /* day cells, chips */
+  --color-paper-3: oklch(90% 0.016 75); /* hover, artwork placeholder */
+
+  --color-rule: oklch(82% 0.012 75); /* hairlines */
+  --color-rule-strong: oklch(62% 0.014 75); /* masthead double rule, card edges */
+
+  /* muted is the contrast floor for supporting copy: 4.97:1 on --color-paper,
+     past the 4.5:1 AA body-text minimum. Do not lighten it. */
+  --color-muted: oklch(45% 0.012 70);
+  --color-ink: oklch(21% 0.014 60); /* 11.8:1 on paper */
+
+  /* ---- Accent ---------------------------------------------------------- */
+  /* One accent, under 3% of any viewport: premiere flags, today's marker,
+     ratings, focus rings, link underlines. Deep enough (4.97:1 on paper) to
+     carry body-sized text, and to take paper-coloured text on top of it. */
+  --color-accent: oklch(45% 0.17 28);
+  --color-accent-ink: oklch(96.5% 0.012 75); /* text ON an accent fill */
+  --color-focus: oklch(45% 0.17 28);
+
+  /* ---- Overlays -------------------------------------------------------- */
+  /* Transparency is a modifier, not a palette entry. These two exist only to
+     keep chips legible over arbitrary episode artwork. */
+  --color-scrim: oklch(18% 0.012 60 / 0.86);
+  --color-scrim-gradient: oklch(18% 0.012 60 / 0.55);
+
+  /* ---- Type ------------------------------------------------------------ */
+  /* Families are bound to next/font CSS variables in app/layout.tsx, so the
+     faces are self-hosted and no external font host is contacted at runtime. */
+  --font-display: var(--font-newsreader), ui-serif, Georgia, serif;
+  --font-body: var(--font-plex-sans), ui-sans-serif, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+
+  /* Five sizes on the page, no more. --text-xs is 12px rather than the 10.24px
+     a 1.25 ratio from 16px would give: README pins 12px as the supporting-label
+     floor (WCAG 1.4.4) and the project commitment outranks the ratio. */
+  --text-xs: 0.75rem; /* 12px — labels, chips */
+  --text-sm: 0.875rem; /* 14px — supporting copy */
+  --text-base: 1rem; /* 16px — body, card titles */
+  --text-head: clamp(1.5rem, 2.5vw + 0.5rem, 1.9531rem);
+  --text-mast: clamp(2.25rem, 5vw, 3.75rem);
+
+  /* ---- Space (4pt) ------------------------------------------------------ */
+  --space-3xs: 0.125rem;
+  --space-2xs: 0.25rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2.5rem;
+  --space-2xl: 4rem;
+  --space-3xl: 6rem;
+
+  /* ---- Rules and radii --------------------------------------------------- */
+  /* Squared corners throughout. An almanac is set, not moulded; the rounded
+     rectangle is what made the previous design read as a generic dashboard. */
+  --rule-hair: 1px;
+  --rule-strong: 2px;
+  /* The heavy rule weight: the masthead's double rule (hair + gap + hair) and
+     the season-progress bar. One decision, used in both places. */
+  --rule-double: 3px;
+  --radius-none: 0px;
+  --radius-sm: 2px;
+
+  /* ---- Motion ------------------------------------------------------------ */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro: 120ms;
+  --dur-short: 220ms;
+  --dur-long: 420ms;
+
+  /* ---- Depth ------------------------------------------------------------- */
+  --z-base: 1;
+  --z-raised: 10;
+  --z-sticky: 200;
+}

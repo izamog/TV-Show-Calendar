@@ -28,21 +28,35 @@ export const PERIOD_DAYS = 28;
  * week of rated hindsight rather than widening the range.
  */
 export const PERIOD_LOOKBACK_WEEKS = 1;
-/** How much of that period is on screen at once: 2 Monday–Sunday weeks. */
-export const VISIBLE_DAYS = 14;
-/** Scroll step for the up/down arrows. */
+/** How much of that period is on screen at once: one Monday–Sunday week. */
+export const VISIBLE_DAYS = 7;
+/** Step for the back/forward arrows. */
 const DAYS_PER_WEEK = 7;
 /** Highest week offset that still fits a full visible window inside the period. */
 export const MAX_WEEK_OFFSET = (PERIOD_DAYS - VISIBLE_DAYS) / DAYS_PER_WEEK;
 
 /**
+ * Which week the calendar opens on when the URL says nothing.
+ *
+ * Offset 0 is the hindsight week — already aired, and there on purpose so the
+ * ratings have votes behind them (see `PERIOD_LOOKBACK_WEEKS`). It is not where
+ * anyone wants to *land*, though: arriving on a week that finished on Sunday
+ * reads as a stale page. Skipping forward by the lookback puts today on screen,
+ * and the hindsight week stays one click back.
+ *
+ * This only applies when no offset was supplied. An explicit `?week=0` still
+ * resolves to the hindsight week.
+ */
+export const DEFAULT_WEEK_OFFSET = PERIOD_LOOKBACK_WEEKS;
+
+/**
  * A resolved rolling window. All day keys are `YYYY-MM-DD` London calendar dates.
  *
  * The *period* is a fixed 28 days beginning on the Monday `PERIOD_LOOKBACK_WEEKS`
- * weeks before the current London week. The *visible* slice is a 14-day
- * (two-week) view into that period, moved one week at a time by the up/down
- * arrows — so the data range never changes as the user scrolls, only which
- * fortnight is on screen.
+ * weeks before the current London week. The *visible* slice is a single
+ * Monday–Sunday week within that period, moved one week at a time by the
+ * back/forward arrows — so the data range never changes as the user steps
+ * through it, only which week is on screen.
  */
 export interface RollingWindow {
   /**
@@ -54,13 +68,13 @@ export interface RollingWindow {
   periodEndKey: string;
   /** All 28 day keys of the period, in order. */
   periodDayKeys: string[];
-  /** Which week of the period the visible slice starts at (0..MAX_WEEK_OFFSET). */
+  /** Which week of the period is on screen (0..MAX_WEEK_OFFSET). */
   weekOffset: number;
-  /** The 14 day keys currently on screen. */
+  /** The 7 day keys currently on screen, Monday first. */
   visibleDayKeys: string[];
-  /** Human label for the visible slice, e.g. "27 Jul – 9 Aug 2026". */
+  /** Human label for the visible week, e.g. "3 – 9 Aug 2026". */
   rangeLabel: string;
-  /** Whether the up/down arrows have anywhere to go. */
+  /** Whether the back/forward arrows have anywhere to go. */
   canGoEarlier: boolean;
   canGoLater: boolean;
   /** Offsets the arrows link to (clamped, so they never point out of range). */
@@ -88,12 +102,16 @@ function civilDayKey(utcMidnight: Date): string {
 
 /**
  * Parse the `?week=` search param into a valid week offset.
- * Anything absent, malformed, or out of range clamps to 0 (the current week),
- * so a hand-edited URL can never render an out-of-period grid.
+ *
+ * Absent or malformed falls back to `DEFAULT_WEEK_OFFSET` — the week containing
+ * today, which is where a visitor with no opinion should land. A well-formed
+ * integer is honoured and clamped into `0..MAX_WEEK_OFFSET`, so a hand-edited
+ * URL can never render an out-of-period grid but can still ask for the
+ * hindsight week deliberately.
  */
 export function parseWeekOffset(raw?: string | null): number {
   const n = Number(raw);
-  if (!raw || !Number.isInteger(n)) return 0;
+  if (!raw || !Number.isInteger(n)) return DEFAULT_WEEK_OFFSET;
   return Math.min(Math.max(n, 0), MAX_WEEK_OFFSET);
 }
 
@@ -125,8 +143,13 @@ function formatRangeLabel(startKey: string, endKey: string): string {
 
 /**
  * The rolling window: a 28-day period starting on the Monday
- * `PERIOD_LOOKBACK_WEEKS` weeks before the current London week, with a 14-day
- * slice visible at `weekOffset`.
+ * `PERIOD_LOOKBACK_WEEKS` weeks before the current London week, with one
+ * Monday–Sunday week visible at `weekOffset`.
+ *
+ * A numeric `weekOffsetRaw` is taken literally (and clamped); a string or a
+ * missing value goes through `parseWeekOffset`, so only the latter picks up
+ * `DEFAULT_WEEK_OFFSET`. That split is what lets a caller ask for week 0
+ * explicitly while a bare `getRollingWindow()` still lands on today.
  *
  * Pass `now` for testability; defaults to the real clock. The period is
  * recomputed from the clock on every call and is never hardcoded.

@@ -9,13 +9,23 @@ shows you have favourited on TMDB — with a live subscribable **iCal feed**.
 
 - **Rolling window:** the period is a fixed **28 days** starting on the Monday
   **one week before** the current London week, recomputed from the clock on
-  every request and never hardcoded. **14 days (two Monday–Sunday rows) are on
-  screen at a time**; the up/down arrows scroll that view one week at a time via
-  `?week=0|1|2`. Out-of-range or malformed values clamp back into the period.
+  every request and never hardcoded. **One Monday–Sunday week is on screen at a
+  time**; the back/forward arrows step through the four weeks of the period via
+  `?week=0|1|2|3`. With no `?week=` the page opens on the week containing
+  today (`DEFAULT_WEEK_OFFSET`), not on the hindsight week — arriving on a week
+  that ended last Sunday reads as a stale page. A well-formed offset is
+  honoured, so `?week=0` still reaches the hindsight week deliberately;
+  malformed values fall back to the default and out-of-range integers clamp
+  into the period.
   The week of hindsight is what makes ratings usable — see
   [Ratings](#ratings).
 - **Accessibility:** WCAG 2.1 AA — see the Accessibility section below.
+- **Design:** a printed-listings register — warm paper, one accent, a broadsheet
+  masthead over a week of dated columns. Every value comes from
+  `tokens.css`; see [Project structure](#project-structure).
 - **Data:** [TMDB](https://www.themoviedb.org/) (v3 API key **or** v4 read token).
+  The page footer carries the attribution TMDB's terms require: *this product
+  uses the TMDB API but is not endorsed or certified by TMDB.*
 - **Timezone:** all air times are converted to **Europe/London**, handling the
   BST/GMT seasonal offset correctly via the IANA database (through `Intl`).
 - **Calendar sync:** `GET /api/calendar` returns a `text/calendar` `.ics` feed
@@ -26,9 +36,9 @@ shows you have favourited on TMDB — with a live subscribable **iCal feed**.
 For every allowed English-language scripted show, the app pulls all Season 1
 episodes and keeps those whose London air date lands in the displayed grid. Each
 episode card shows the poster/still, London air time, network badge, show name,
-episode name, and a season progress bar. Episode 1 gets a glowing border and a
-badge — **SERIES PREMIERE** on a first season, **SEASON PREMIERE** on a
-favourited show's later one.
+episode name, and a season progress bar. Episode 1 gets an accent border and a
+flag across the top of the card — **SERIES PREMIERE** on a first season,
+**SEASON PREMIERE** on a favourited show's later one.
 
 On desktop, hovering **or keyboard-focusing** a card reveals the episode
 synopsis. The show's own synopsis is shown under an "About the show" heading in
@@ -167,9 +177,11 @@ A **discovered** show must clear all of these to appear (all configurable in
 ## Project structure
 
 ```
+tokens.css                Design tokens: colour, type, space, rule, motion
+tailwind.config.ts        Binds every token to a utility name
 app/
-  layout.tsx              Root layout + metadata
-  page.tsx                Grid + week nav (server component, live data)
+  layout.tsx              Root layout, fonts, metadata
+  page.tsx                Masthead + edition band + grid + colophon
   api/calendar/route.ts   .ics feed endpoint
   api/shows/route.ts      JSON season feed (one record per show, for automation)
 components/
@@ -192,6 +204,15 @@ lib/
 
 The windowing and timezone logic live entirely in `lib/dates.ts`, so the page
 and the `.ics` endpoint share identical semantics with no duplication.
+
+`tokens.css` is the design layer and the only place a colour, font, size, rule
+weight or duration is defined. `tailwind.config.ts` binds each one to a utility
+name (`bg-paper`, `text-accent`, `font-display`, `gap-lg`, `h-rule-double`), so
+components reference tokens rather than values. A raw hex, `oklch()` or
+`font-family` written inline in `app/` or `components/` is a bug: add the token
+first, then use the name. The layout imports `tokens.css` ahead of
+`app/globals.css` — not via `@import`, because this project's PostCSS chain is
+`tailwindcss` + `autoprefixer` with no `postcss-import` to inline it.
 
 `lib/tmdb-client.ts` is a leaf: it imports nothing else from `lib/`. That is
 what keeps the graph acyclic, since `lib/favourites.ts` needs the fetch helper
@@ -381,21 +402,34 @@ npm run test:watch
 ```
 
 Notably the window tests assert Monday anchoring across both DST transition
-days, that the visible 14 days always stay inside the 28-day period at every
-offset, arrow availability at the ends, a late-Sunday-UTC instant that is
-already Monday in London, and clamping of out-of-range or malformed `?week=`.
+days, that the visible week always stays inside the 28-day period at every
+offset, that the default landing week contains today while `?week=0` still
+resolves to the hindsight week, arrow availability at the ends, a
+late-Sunday-UTC instant that is already Monday in London, and clamping of
+out-of-range or malformed `?week=`.
 
 ## Accessibility
 
 Targets **WCAG 2.1 level AA**. Specifically:
 
-- **Contrast (1.4.3).** Every text/background pair was measured, and three
-  failures were fixed: `neutral-500` body text (4.18:1), `neutral-700` dimmed
-  text (1.91:1), and white-on-`sky-500` episode chips (2.77:1, now near-black on
-  `sky-400` at 9.24:1). Disabled arrows are exempt as inactive components.
+- **Contrast (1.4.3).** Every text/background pair is measured against the
+  rendered page, not estimated from the token's OKLCH lightness. Current
+  results: ink on paper 15.96:1, ink on card 14.60:1, accent on paper 7.33:1,
+  paper on accent (premiere flag, episode chip) 7.33:1, muted on paper 6.72:1,
+  accent on card 6.70:1, muted on card 6.14:1, and `--color-rule-strong` on
+  paper 3.29:1 for control boundaries (SC 1.4.11 needs 3:1). `--color-rule` at
+  1.57:1 is decorative separation only — it is never the sole carrier of
+  meaning. Disabled arrows are exempt as inactive components.
 - **Text size.** No hardcoded `10px`/`11px` type remains; the floor is `text-xs`
   (12px) for supporting labels and `text-sm` (14px) for body copy, all in `rem`
-  so they scale with the browser's font-size setting (1.4.4).
+  so they scale with the browser's font-size setting (1.4.4). `--text-xs` is
+  deliberately 12px rather than the 10.24px a 1.25 type ratio from 16px would
+  give — the floor outranks the ratio.
+- **Motion (2.3.3).** Nothing on the page loops. The premiere marker is a
+  printed flag, not the animated glow it used to be: that animated a paint
+  property, ran forever, and had no `prefers-reduced-motion` escape. The only
+  motion left is a colour shift on hover and the synopsis crossfade, both
+  clamped to 150ms under `prefers-reduced-motion: reduce`.
 - **Content on hover or focus (1.4.13).** The synopsis overlay is reachable by
   keyboard, not just pointer, and Escape dismisses it without moving focus.
 - **Keyboard (2.1.1, 2.4.7).** All controls are reachable with a visible
@@ -405,6 +439,17 @@ Targets **WCAG 2.1 level AA**. Specifically:
   spoken date ("Monday, 10 August 2026"); decorative artwork uses empty `alt`,
   and the S1/E05 chip carries an `sr-only` expansion.
 - **Targets (2.5.5).** Arrows and the copy button are at least 44x44px.
+- **Reflow (1.4.10).** Verified at 320, 375, 414, 768, 1280 and 1920px: no
+  horizontal scroll at any width, and no button or link label wraps to a second
+  line. `overflow-x: clip` (not `hidden`, which would open a new scroll
+  container) sits on both `html` and `body`.
+
+**Touch parity, unresolved.** The synopsis overlay is hover/focus-only and
+hidden entirely below the `lg` breakpoint, so touch users get no route to a
+synopsis at all. That is a content-parity gap, not a hover-only affordance —
+nothing is shown that cannot be reached — but it is still a gap. Fixing it means
+making the card a real toggle on coarse pointers, which is a behaviour change
+rather than a visual one.
 
 Not automatically verified — no axe/Lighthouse run is wired into CI, so treat
 this as a considered implementation rather than a certified audit.
