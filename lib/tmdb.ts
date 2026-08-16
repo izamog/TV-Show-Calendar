@@ -54,7 +54,7 @@ interface TmdbAuth {
   apiKey?: string;
 }
 
-function readAuth(): TmdbAuth {
+export function readAuth(): TmdbAuth {
   const bearer = process.env.TMDB_READ_ACCESS_TOKEN?.trim();
   const apiKey = process.env.TMDB_API_KEY?.trim();
   if (!bearer && !apiKey) {
@@ -66,7 +66,7 @@ function readAuth(): TmdbAuth {
 }
 
 /** GET a TMDB endpoint with auth, a timeout, and meaningful error context. */
-async function tmdbGet<T>(
+export async function tmdbGet<T>(
   path: string,
   params: Record<string, string>,
   auth: TmdbAuth
@@ -106,7 +106,7 @@ async function tmdbGet<T>(
 }
 
 /** Run tasks with bounded concurrency, preserving input order in the result. */
-async function mapWithConcurrency<I, O>(
+export async function mapWithConcurrency<I, O>(
   items: I[],
   limit: number,
   worker: (item: I, index: number) => Promise<O>
@@ -166,7 +166,7 @@ export interface TmdbSeasonDetails {
 }
 
 /** ISO date `YYYY-MM-DD` shifted by whole days from a day key. */
-function shiftDayKey(dayKey: string, deltaDays: number): string {
+export function shiftDayKey(dayKey: string, deltaDays: number): string {
   const [y, m, d] = dayKey.split("-").map((n) => Number(n));
   const shifted = new Date(Date.UTC(y, m - 1, d) + deltaDays * 86_400_000);
   return shifted.toISOString().slice(0, 10);
